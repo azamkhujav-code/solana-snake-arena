@@ -142,7 +142,7 @@ async function main(): Promise<void> {
    * Cheap when idle — a Redis read per paid tier and nothing else until someone
    * queues — and `unref`ed so it never holds the process open at shutdown.
    */
-  const ensureRooms = createRoomEnsurer({ solana, lobbies, log });
+  const ensureRooms = createRoomEnsurer({ solana, lobbies, prisma, log });
   const roomTimer = setInterval(() => {
     void ensureRooms().catch((err: unknown) => log.error({ err }, 'room ensurer failed'));
     // Five seconds, not fifteen: the countdown starts the moment a room fills

@@ -1,3 +1,11 @@
+import {
+  GameMode,
+  GameStatus,
+  Region,
+  RoomStatus,
+  RoomVisibility,
+  type PrismaClient,
+} from '@arena/db';
 import type { Logger } from '@arena/logger';
 // Via the lobby rather than `@arena/protocol` directly: the worker depends on
 // the lobby, which re-exports the tier table as the published contract it is.
@@ -11,7 +19,57 @@ const ON_CHAIN_UNLIMITED_PLAYERS = 65_535;
 export interface EnsureRoomsDeps {
   solana: ArenaService;
   lobbies: LobbyService;
+  prisma: PrismaClient;
   log: Logger;
+}
+
+/**
+ * Gives a queued lobby a game to pay into, if it has none.
+ *
+ * `open-lobby` binds one per cycle, but a lobby that reset — a launch that
+ * failed, a cycle that aborted — carries a null game id until the next window
+ * comes round, up to ten minutes later. The room still fills and still counts
+ * down, and the client's entry-fee hook needs a game id to build the payment,
+ * so it silently did nothing: no wallet prompt, no error, a countdown ticking
+ * at players it was never going to charge.
+ *
+ * Binding it here rather than waiting means the gap is seconds instead of
+ * minutes, and never silent.
+ */
+async function bindGame(
+  deps: EnsureRoomsDeps,
+  tier: { id: string; name: string; entryFeeLamports: bigint; maxPlayers: number | null },
+): Promise<string | null> {
+  const room = await deps.prisma.room.upsert({
+    where: { code: tier.id },
+    update: {},
+    create: {
+      code: tier.id,
+      name: tier.name,
+      mode: GameMode.WAGER,
+      region: Region.US_EAST,
+      visibility: RoomVisibility.PUBLIC,
+      status: RoomStatus.ACTIVE,
+      maxPlayers: tier.maxPlayers,
+      entryFeeLamports: tier.entryFeeLamports,
+    },
+    select: { id: true },
+  });
+
+  const game = await deps.prisma.game.create({
+    data: {
+      roomId: room.id,
+      status: GameStatus.PENDING,
+      seed: BigInt(Math.floor(Math.random() * Number.MAX_SAFE_INTEGER)),
+      // Marks where this game came from, so one bound out of band is
+      // distinguishable from one the cycle created.
+      nodeId: `ensure:${tier.id}:${Date.now()}`,
+      startedAt: new Date(),
+    },
+    select: { id: true },
+  });
+
+  return game.id;
 }
 
 /**
@@ -43,9 +101,31 @@ export function createRoomEnsurer(deps: EnsureRoomsDeps): () => Promise<void> {
       if (tier.entryFeeLamports === 0n) continue;
 
       const lobby = await deps.lobbies.get(tier.id).catch(() => null);
-      if (!lobby?.gameId || lobby.playerCount === 0) continue;
+      if (!lobby || lobby.playerCount === 0) continue;
 
-      const roomId = roomIdFromUuid(lobby.gameId);
+      let gameId = lobby.gameId;
+
+      if (!gameId) {
+        // Players are waiting in a room with nothing to pay into. Left alone
+        // this is invisible: the countdown runs, the fee hook finds no game and
+        // returns without a word, and the room counts down at people it cannot
+        // charge until the next cycle rebinds it.
+        try {
+          gameId = await bindGame(deps, tier);
+          if (!gameId) continue;
+
+          await deps.lobbies.open(tier.id, { gameId, scheduled: false });
+          deps.log.warn(
+            { tierId: tier.id, gameId, players: lobby.playerCount },
+            'queued lobby had no game to pay into; bound one',
+          );
+        } catch (error) {
+          deps.log.error({ err: error, tierId: tier.id }, 'could not bind a game to the lobby');
+          continue;
+        }
+      }
+
+      const roomId = roomIdFromUuid(gameId);
 
       try {
         // The vault holding lamports is the same idempotency check `create-pool`
@@ -64,14 +144,14 @@ export function createRoomEnsurer(deps: EnsureRoomsDeps): () => Promise<void> {
 
         complained.delete(tier.id);
         deps.log.info(
-          { tierId: tier.id, gameId: lobby.gameId, players: lobby.playerCount },
+          { tierId: tier.id, gameId, players: lobby.playerCount },
           'opened the on-chain room for a queued tier',
         );
       } catch (error) {
         if (!complained.has(tier.id)) {
           complained.add(tier.id);
           deps.log.error(
-            { err: error, tierId: tier.id, gameId: lobby.gameId },
+            { err: error, tierId: tier.id, gameId },
             'could not open the on-chain room; entry fees cannot be paid into it',
           );
         }
