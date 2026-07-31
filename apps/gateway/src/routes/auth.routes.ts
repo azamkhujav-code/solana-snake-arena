@@ -12,7 +12,12 @@ import type { ZodTypeProvider } from 'fastify-type-provider-zod';
 import { z } from 'zod';
 
 import { config } from '../config.js';
-import { clearRefreshCookie, REFRESH_COOKIE, setRefreshCookie } from '../lib/refresh-cookie.js';
+import {
+  clearRefreshCookie,
+  isAllowedOrigin,
+  REFRESH_COOKIE,
+  setRefreshCookie,
+} from '../lib/refresh-cookie.js';
 import { tooManyRequests, unauthorized } from '../lib/errors.js';
 import {
   type AuthDeps,
@@ -216,6 +221,15 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
       config: { rateLimit: { max: 30, timeWindow: 60_000 } },
     },
     async (request, reply) => {
+      // The cookie is `SameSite=None` so it survives the cross-site hop from
+      // the web app to this API, which means the browser will also attach it to
+      // a request a hostile page makes. That page cannot read the reply through
+      // CORS, but spending the single-use token would still end the player's
+      // session, so an unrecognised Origin is refused before anything rotates.
+      if (!isAllowedOrigin(request.headers.origin)) {
+        throw unauthorized('Refresh is not allowed from this origin');
+      }
+
       // The cookie is the browser's copy; the body is for clients that cannot
       // hold one. Body wins when both are present so an explicit token is never
       // silently overridden by a stale cookie.

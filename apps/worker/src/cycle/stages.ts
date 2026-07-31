@@ -220,6 +220,24 @@ const openLobby: StageHandler = async (data, ctx) => {
    */
   const scheduled = false;
 
+  /**
+   * Also the recovery point for a stranded lobby.
+   *
+   * `open` moves any status back to `waiting`, so whatever left a tier stuck —
+   * a launch that failed after marking it, a cancelled match, a bug not yet
+   * found — is cleared on the next cycle rather than needing a hand. Logged at
+   * warn when it actually rescued something, because a lobby that was still
+   * `launching` when its next cycle came round is a real fault, and silently
+   * repairing it would hide the thing worth fixing.
+   */
+  const previous = await ctx.lobbies.get(data.tierId);
+  if (previous && previous.status === 'launching') {
+    ctx.log.warn(
+      { tierId: data.tierId, players: previous.playerCount, gameId: previous.gameId },
+      'lobby was still launching at the next cycle; reopening',
+    );
+  }
+
   await ctx.lobbies.open(data.tierId, { gameId: data.gameId ?? null, scheduled });
   ctx.log.info({ tierId: data.tierId, gameId: data.gameId, scheduled }, 'lobby open');
   return { patch: {} };
@@ -238,26 +256,29 @@ const closeLobby: StageHandler = async (data, ctx) => {
     return { patch: {} };
   }
 
-  const lobby = await ctx.lobbies.close(data.tierId);
+  /**
+   * Read, do not close.
+   *
+   * Rooms run themselves now — `open-lobby` clears `scheduled`, so a lobby
+   * reaching its minimum counts down and launches on its own, and
+   * `performLaunch` reopens it for the next batch. Closing it here is the other
+   * half of the model that replaced, and the two fight: the lobby self-launched
+   * and reset minutes ago, then this stage shoved whoever had queued since into
+   * `launching` and returned without ever reopening them.
+   *
+   * Only the not-enough-players branch reopened, so the *successful* path was
+   * the one that stranded the tier: a room showing "In progress" forever, with
+   * players who could neither play nor leave, and nothing to unstick it until
+   * someone noticed. Bronze sat like that with two people in it.
+   */
+  const lobby = await ctx.lobbies.get(data.tierId);
 
   if (!lobby || lobby.playerCount < tier.minPlayers) {
-    /**
-     * Not enough players. Abort rather than fail: an empty lobby is a normal
-     * outcome at 4am, not an incident worth retrying or alerting on.
-     *
-     * But reopen it first. `close` has already run, so the lobby is shut, and
-     * aborting here used to leave it that way until the next cycle's
-     * `open-lobby` — roughly five minutes of a board showing "In progress" for
-     * a match that never started. That is a deadlock, not a wait: the room
-     * cannot fill because it is closed, and it closed because it did not fill.
-     * Anyone arriving in that window is told to come back later by a room with
-     * nobody in it.
-     */
-    await ctx.lobbies.open(data.tierId, { gameId: data.gameId ?? null });
-
+    // An empty lobby is a normal outcome at 4am, not an incident worth retrying
+    // or alerting on. Nothing was closed, so there is nothing to reopen.
     ctx.log.info(
       { tierId: data.tierId, players: lobby?.playerCount ?? 0, minimum: tier.minPlayers },
-      'not enough players; lobby reopened for the next cycle',
+      'not enough players for this cycle',
     );
 
     return {
