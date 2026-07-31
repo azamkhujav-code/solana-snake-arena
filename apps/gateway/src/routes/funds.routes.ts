@@ -40,12 +40,19 @@ export async function fundsRoutes(app: FastifyInstance): Promise<void> {
   /**
    * Headroom left for the entry transaction itself.
    *
-   * A wallet holding exactly the fee cannot pay it: the transaction costs a few
-   * thousand lamports and the account must stay rent-exempt. Turning that into
-   * a failed signature in the player's wallet, seconds before a match, is a bad
-   * way to learn it — so the check demands the fee plus a small margin.
+   * A wallet holding exactly the fee cannot pay it: `enter_room` opens a
+   * `RoomPlayer` account for the player, and the payer funds its rent-exempt
+   * minimum on top of the fee and the signature. That account is 98 bytes,
+   * which is a little over 0.0015 SOL, so 0.002 covers it with room for the
+   * signature and a fee bump.
+   *
+   * This was 0.01 SOL against a comment describing "a few thousand lamports" —
+   * a margin six times the real cost and, on the bronze tier, larger than the
+   * entry fee itself. A player holding 0.014 SOL was told a 0.01 SOL room was
+   * unaffordable, which is both wrong and unarguable: the message quoted the
+   * fee, so the two numbers it printed said they had enough.
    */
-  const TRANSACTION_HEADROOM = 10_000_000n; // 0.01 SOL
+  const TRANSACTION_HEADROOM = 2_000_000n; // 0.002 SOL
 
   api.post(
     '/wallet/can-afford',
@@ -90,7 +97,10 @@ export async function fundsRoutes(app: FastifyInstance): Promise<void> {
 
       return {
         tierId: tier.id,
-        requiredLamports: tier.entryFeeLamports.toString(),
+        // What the wallet must actually hold, not just the fee. Reporting the
+        // fee here while judging `sufficient` against fee-plus-headroom is what
+        // produced refusals whose own numbers said the player could pay.
+        requiredLamports: needed.toString(),
         walletLamports: lamports.toString(),
         sufficient: lamports >= needed,
       };

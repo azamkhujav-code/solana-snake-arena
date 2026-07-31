@@ -143,8 +143,12 @@ export async function lobbyRoutes(app: FastifyInstance): Promise<void> {
         try {
           const funds = await canAfford(tier.id, token);
           if (!funds.sufficient) {
+            // `requiredLamports` is the fee plus the rent and signature the
+            // entry transaction needs, so the two figures here are directly
+            // comparable — quoting the bare fee made refusals read as a
+            // contradiction, because the wallet visibly held more than it.
             throw app.httpErrors.conflict(
-              `This room costs ${funds.requiredLamports} lamports and your wallet holds ${funds.walletLamports}.`,
+              `This room needs ${funds.requiredLamports} lamports including transaction costs, and your wallet holds ${funds.walletLamports}.`,
             );
           }
         } catch (error) {

@@ -23,8 +23,11 @@ import {
   normalizeRoomId,
 } from './pda.js';
 import {
+  encodeBool,
   encodeFixedBytes,
   encodeInstruction,
+  encodeOption,
+  encodePubkey,
   encodeU16,
   encodeU64,
   encodeVec,
@@ -187,6 +190,48 @@ export function createInitializeInstruction(params: {
       Buffer.from(feeDestination.toBytes()),
       encodeU16(feeBps),
       encodeU16(withdrawalFeeBps),
+    ),
+  });
+}
+
+/**
+ * Changes program configuration. Signed by the admin.
+ *
+ * Every field is optional and `None` leaves the stored value alone, so a caller
+ * can rotate one setting without restating the rest — restating is how a stale
+ * client silently reverts something it did not know about.
+ *
+ * `feeDestination` is the one most likely to move: the platform fee is paid
+ * straight to it at settlement, and `settle_to_winner` constrains the account
+ * passed to it against this value. Changing where the rake lands therefore
+ * means changing it *here*, not just in the backend's configuration — pointing
+ * the worker at a different wallet on its own makes every settlement fail the
+ * constraint instead of paying somewhere new.
+ */
+export function createUpdateConfigInstruction(params: {
+  programId: PublicKey;
+  admin: PublicKey;
+  feeBps?: number | null;
+  withdrawalFeeBps?: number | null;
+  settlementAuthority?: PublicKey | null;
+  feeDestination?: PublicKey | null;
+  paused?: boolean | null;
+}): TransactionInstruction {
+  const { programId, admin } = params;
+  const [config] = findConfigPda(programId);
+
+  return new TransactionInstruction({
+    programId,
+    keys: [writable(config), signer(admin, true)],
+    // Positional, and every `None` still costs its presence byte — dropping one
+    // shifts every argument after it into the wrong field.
+    data: encodeInstruction(
+      'update_config',
+      encodeOption(params.feeBps, encodeU16),
+      encodeOption(params.withdrawalFeeBps, encodeU16),
+      encodeOption(params.settlementAuthority, encodePubkey),
+      encodeOption(params.feeDestination, encodePubkey),
+      encodeOption(params.paused, encodeBool),
     ),
   });
 }
