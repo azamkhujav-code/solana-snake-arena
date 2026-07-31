@@ -4,6 +4,7 @@ import {
   INTERPOLATION_DELAY_MS,
   ServerEvent,
   type LeaderboardEntry,
+  type MatchEnded,
   type PlayerDied,
   type RoomJoined,
 } from '@arena/protocol';
@@ -38,6 +39,8 @@ export interface EngineOptions {
   quality: QualityPreset;
   onHud?: (hud: EngineHud) => void;
   onDeath?: (event: PlayerDied) => void;
+  /** The match resolved; standings are final. */
+  onEnded?: ((event: MatchEnded) => void) | undefined;
   onLeaderboard?: (entries: LeaderboardEntry[]) => void;
 }
 
@@ -207,6 +210,14 @@ export class GameEngine {
 
     socket.on(ServerEvent.Leaderboard, (entries: LeaderboardEntry[]) => {
       options.onLeaderboard?.(entries);
+    });
+
+    socket.on(ServerEvent.Ended, (event: MatchEnded) => {
+      // The match is decided, so stop taking input: the snake is no longer
+      // playing for anything and steering it into a wall after the fact would
+      // be a strange last impression.
+      this.spectating = true;
+      options.onEnded?.(event);
     });
 
     // Clock sync. Interpolation renders at `serverTime - delay`, so a wrong

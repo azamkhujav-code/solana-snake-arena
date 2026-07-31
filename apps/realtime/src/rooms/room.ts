@@ -557,6 +557,34 @@ export class Room {
     this.reported = false;
   }
 
+  /**
+   * Tells the room who won.
+   *
+   * The winner previously just found themselves alone in an empty arena, with
+   * nothing to distinguish having won from everyone else having quit — and no
+   * indication that a payout was coming. Sent to the whole room rather than
+   * only the winner: everyone who played is entitled to see the result of the
+   * match they paid into.
+   */
+  announceEnd(result: {
+    gameId: string;
+    standings: Array<{ playerId: string; placement: number; score: number; kills: number }>;
+  }): void {
+    const winner = result.standings.find((row) => row.placement === 1) ?? null;
+
+    this.io.to(this.roomId).emit(ServerEvent.Ended, {
+      gameId: result.gameId,
+      winnerId: winner?.playerId ?? null,
+      // Read from the seat rather than the standings, which carry ids only.
+      // Falls back to the id so a winner who already left is still named.
+      winnerNickname: winner
+        ? (this.seats.get(winner.playerId)?.nickname ?? winner.playerId.slice(0, 8))
+        : null,
+      entrants: result.standings.length,
+      standings: result.standings,
+    });
+  }
+
   /** Stops accepting joins and lets the room empty out. */
   drain(): void {
     this.status = 'draining';

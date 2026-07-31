@@ -21,6 +21,14 @@ export interface GameState {
    * Single-use and valid for thirty seconds, so it is cleared once spent.
    */
   ticket: MatchTicket | null;
+  /**
+   * The tier this match was entered from.
+   *
+   * Kept because the prize is the tier's entry fee times the number who paid,
+   * and after launch the queue is cleared — so by the time the match ends there
+   * is nothing else left on the client that remembers which room it was.
+   */
+  tierId: string | null;
 
   /* HUD values. Updated a few times per second, never per frame. */
   score: number;
@@ -46,7 +54,7 @@ export interface GameState {
 
   setStatus: (status: ConnectionStatus) => void;
   setRoom: (roomId: string | null, playerId: string | null) => void;
-  setTicket: (ticket: MatchTicket | null) => void;
+  setTicket: (ticket: MatchTicket | null, tierId?: string | null) => void;
   /**
    * Clears gameplay state but keeps the ticket.
    *
@@ -74,6 +82,7 @@ const INITIAL = {
   roomId: null,
   playerId: null,
   ticket: null as MatchTicket | null,
+  tierId: null as string | null,
   score: 0,
   mass: 0,
   rank: null,
@@ -105,7 +114,8 @@ export const useGameStore = create<GameState>()((set) => ({
 
   setStatus: (status) => set({ status }),
   setRoom: (roomId, playerId) => set({ roomId, playerId }),
-  setTicket: (ticket) => set({ ticket, status: ticket ? 'connecting' : 'idle' }),
+  setTicket: (ticket, tierId = null) =>
+    set({ ticket, tierId, status: ticket ? 'connecting' : 'idle' }),
   setHud: (payload) => set(payload),
   setLeaderboard: (leaderboard) => set({ leaderboard }),
 
@@ -142,5 +152,5 @@ export const useGameStore = create<GameState>()((set) => ({
   // Kills and the feed reset with the match, not with a respawn — they are
   // per-session stats, and clearing them on every death would erase the run.
   reset: () => set({ ...INITIAL }),
-  resetForMatch: () => set((state) => ({ ...INITIAL, ticket: state.ticket })),
+  resetForMatch: () => set((state) => ({ ...INITIAL, ticket: state.ticket, tierId: state.tierId })),
 }));

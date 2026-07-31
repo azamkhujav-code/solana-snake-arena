@@ -186,6 +186,11 @@ export class RoomManager {
       // next tick; a rejection below clears it so the attempt repeats.
       room.markReported();
 
+      // Announced before the write, and independently of it: the players are
+      // waiting on this and it costs nothing, whereas the Redis round trip
+      // below is for the settlement worker and can take as long as it likes.
+      room.announceEnd(result);
+
       void this.redis
         .set(`match:result:${gameId}`, JSON.stringify(result), 'EX', RESULT_TTL_SECONDS)
         .then(() => {

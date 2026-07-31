@@ -72,7 +72,9 @@ export function useMatchLaunch(): {
           baseUrl: env.matchmakerUrl,
         });
 
-        setTicket(ticket as MatchTicket);
+        // The tier rides along: the prize is its entry fee times the number who
+        // paid, and the queue is cleared by the launch that mints this ticket.
+        setTicket(ticket as MatchTicket, tierId);
 
         /**
          * Queued and playing are different states.

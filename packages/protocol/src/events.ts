@@ -2,6 +2,7 @@ import type {
   InputBatch,
   JoinRoomRequest,
   LeaderboardEntry,
+  MatchEnded,
   PlayerDied,
   ProtocolError,
   RoomJoined,
@@ -34,6 +35,15 @@ export const ServerEvent = {
   Error: 'E',
   /** Server is draining; client should re-matchmake to a new node. */
   Migrate: 'M',
+  /**
+   * The match is over and the standings are final.
+   *
+   * Distinct from `Died`, which says one player is out and the game goes on.
+   * This says there is nothing left to play for — the last snake is standing
+   * and the pot is about to be paid. Without it a winner just watched an empty
+   * arena, with no way to tell victory from everyone else having quit.
+   */
+  Ended: 'X',
 } as const;
 
 /** Payloads the client may emit. Consumed by Socket.IO's generic typing. */
@@ -60,6 +70,7 @@ export interface ServerToClientEvents {
   [ServerEvent.Pong]: (serverTime: number) => void;
   [ServerEvent.Error]: (payload: ProtocolError) => void;
   [ServerEvent.Migrate]: (payload: { reason: string; reconnectAfterMs: number }) => void;
+  [ServerEvent.Ended]: (payload: MatchEnded) => void;
 }
 
 /** Events passed between realtime nodes via the Redis adapter. */

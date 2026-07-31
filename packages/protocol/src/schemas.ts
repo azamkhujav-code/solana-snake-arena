@@ -129,6 +129,30 @@ export const playerDiedSchema = z.object({
 });
 export type PlayerDied = z.infer<typeof playerDiedSchema>;
 
+/**
+ * Final standings, sent to everyone still connected when a match resolves.
+ *
+ * `entrants` rather than a prize figure: the pot lives on chain and the room
+ * has no view of it, but a staked match now starts only once every entrant has
+ * paid — so the client can multiply its own tier's entry fee by this and get
+ * the real number rather than being told an estimate the server also guessed.
+ */
+export const matchEndedSchema = z.object({
+  gameId: z.string().nullable(),
+  winnerId: playerIdSchema.nullable(),
+  winnerNickname: nicknameSchema.nullable(),
+  entrants: z.number().int().nonnegative(),
+  standings: z.array(
+    z.object({
+      playerId: playerIdSchema,
+      placement: z.number().int().positive(),
+      score: z.number().int().nonnegative(),
+      kills: z.number().int().nonnegative(),
+    }),
+  ),
+});
+export type MatchEnded = z.infer<typeof matchEndedSchema>;
+
 export const roomJoinedSchema = z.object({
   playerId: playerIdSchema,
   roomId: roomIdSchema,

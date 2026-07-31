@@ -1,6 +1,6 @@
 'use client';
 
-import type { LeaderboardEntry, PlayerDied } from '@arena/protocol';
+import type { LeaderboardEntry, MatchEnded, PlayerDied } from '@arena/protocol';
 import { useEffect, useRef, useState } from 'react';
 
 import { GameEngine, type EngineHud } from '@/game/engine';
@@ -14,6 +14,7 @@ export interface GameCanvasProps {
   ticket: Parameters<typeof connectToRoom>[0] | null;
   playerId: string | null;
   onDeath?: (event: PlayerDied) => void;
+  onEnded?: (event: MatchEnded) => void;
   onEngineReady?: (engine: GameEngine) => void;
 }
 
@@ -24,7 +25,7 @@ export interface GameCanvasProps {
  * re-render the whole tree whenever it changed and defeat the point of keeping
  * the render loop out of React.
  */
-export function GameCanvas({ ticket, playerId, onDeath, onEngineReady }: GameCanvasProps) {
+export function GameCanvas({ ticket, playerId, onDeath, onEnded, onEngineReady }: GameCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const engineRef = useRef<GameEngine | null>(null);
   const socketRef = useRef<ArenaSocket | null>(null);
@@ -102,6 +103,7 @@ export function GameCanvas({ ticket, playerId, onDeath, onEngineReady }: GameCan
         onHud: handleHud,
         onLeaderboard: handleLeaderboard,
         onDeath: handleDeath,
+        onEnded,
       })
       .then(() => {
         if (cancelled) {
@@ -146,6 +148,7 @@ export function GameCanvas({ ticket, playerId, onDeath, onEngineReady }: GameCan
     playerId,
     quality,
     onDeath,
+    onEnded,
     onEngineReady,
     recordDeath,
     resetForMatch,

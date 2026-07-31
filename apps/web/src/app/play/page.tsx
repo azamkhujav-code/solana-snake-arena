@@ -1,12 +1,13 @@
 'use client';
 
-import type { PlayerDied } from '@arena/protocol';
+import type { MatchEnded, PlayerDied } from '@arena/protocol';
 import dynamic from 'next/dynamic';
 import { useRouter } from 'next/navigation';
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { DeathOverlay, MobileControlsHint } from '@/components/game/DeathOverlay';
 import { Hud } from '@/components/game/Hud';
+import { MatchResult } from '@/components/game/MatchResult';
 import { Minimap } from '@/components/game/Minimap';
 import type { GameEngine } from '@/game/engine';
 import { useLeaveLobby, useLobbies } from '@/hooks/use-lobbies';
@@ -44,8 +45,11 @@ export default function PlayPage() {
 
   const engineRef = useRef<GameEngine | null>(null);
   const [death, setDeath] = useState<PlayerDied | null>(null);
+  const [matchEnd, setMatchEnd] = useState<MatchEnded | null>(null);
+  const tierId = useGameStore((state) => state.tierId);
 
   const handleDeath = useCallback((event: PlayerDied) => setDeath(event), []);
+  const handleEnded = useCallback((event: MatchEnded) => setMatchEnd(event), []);
   const handleEngineReady = useCallback((engine: GameEngine) => {
     engineRef.current = engine;
   }, []);
@@ -73,6 +77,7 @@ export default function PlayPage() {
     matchmaking.reset();
     resetGame();
     setDeath(null);
+    setMatchEnd(null);
     router.push('/');
     // `matchmaking` and `leaveLobby` are stable mutation objects.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -115,13 +120,21 @@ export default function PlayPage() {
         ticket={ticket}
         playerId={playerId}
         onDeath={handleDeath}
+        onEnded={handleEnded}
         onEngineReady={handleEngineReady}
       />
 
       <Hud onLeave={leave} />
       {showMinimap ? <Minimap /> : null}
 
-      <DeathOverlay death={death} onLeave={leave} />
+      {/* The result wins when both could show: being eliminated stops mattering
+          the moment the match is decided, and stacking "you died" under "you
+          won" is how a winner learns they lost. */}
+      {matchEnd ? (
+        <MatchResult result={matchEnd} playerId={playerId} tierId={tierId} onLeave={leave} />
+      ) : (
+        <DeathOverlay death={death} onLeave={leave} />
+      )}
       <MobileControlsHint visible={!death && ticket !== null} />
 
       {!ticket ? (
