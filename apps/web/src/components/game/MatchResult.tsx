@@ -37,6 +37,12 @@ function prizeLamports(tierId: string | null, entrants: number): bigint | null {
   return pot - (pot * BigInt(tier.rakeBps)) / 10_000n;
 }
 
+/** Whether this match is known to have been free, as opposed to simply unknown. */
+function knownFree(tierId: string | null): boolean {
+  const tier = tierId ? getTier(tierId) : undefined;
+  return tier !== undefined && tier.entryFeeLamports === 0n;
+}
+
 /**
  * Shown when the match resolves.
  *
@@ -63,8 +69,17 @@ export function MatchResult({ result, playerId, tierId, onLeave }: MatchResultPr
             <p className="text-sm text-slate-300">Last snake standing.</p>
 
             {prize === null ? (
+              /*
+               * Two different things used to read the same, and the wrong one
+               * is expensive: a gold winner was told they had been in a
+               * practice match with nothing to pay out. Saying "free" requires
+               * knowing the room was free, and not knowing which room it was
+               * is not the same fact.
+               */
               <p className="my-5 text-sm text-slate-400">
-                A practice match — nothing was staked, so there is nothing to pay out.
+                {knownFree(tierId)
+                  ? 'A practice match — nothing was staked, so there is nothing to pay out.'
+                  : 'Your winnings are being settled. Check your wallet in a few minutes.'}
               </p>
             ) : (
               <div className="my-5">

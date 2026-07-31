@@ -16,6 +16,7 @@ import { useGameStore } from '@/stores/game-store';
  */
 export function useMatchmaking() {
   const setStatus = useGameStore((state) => state.setStatus);
+  const setTicket = useGameStore((state) => state.setTicket);
 
   return useMutation<MatchTicket, Error, { mode: GameMode; tierId?: string }>({
     mutationFn: async ({ mode, tierId }) => {
@@ -31,6 +32,18 @@ export function useMatchmaking() {
       });
     },
     onError: () => setStatus('disconnected'),
-    onSuccess: () => setStatus('connecting'),
+    /**
+     * Records the tier along with the ticket.
+     *
+     * Only the lobby-launch path did this, so a player who reached the arena
+     * any other way arrived with no idea what they had paid — and the result
+     * screen, which works out the prize from the tier, told a gold winner they
+     * had been in a practice match and there was nothing to pay out. The money
+     * was real; only the screen was wrong, which is the worse way round.
+     */
+    onSuccess: (ticket, variables) => {
+      setStatus('connecting');
+      setTicket(ticket, variables.tierId ?? null);
+    },
   });
 }
