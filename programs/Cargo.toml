@@ -1,0 +1,21 @@
+[workspace]
+members = ["programs/*"]
+resolver = "2"
+
+[profile.release]
+# Kept on deliberately: this program moves money, and a silent wrap on a lamport
+# calculation is the one class of bug that must never be optimised away.
+overflow-checks = true
+lto = "fat"
+codegen-units = 1
+# Size, not speed. A Solana program's deploy cost is rent on its own bytes, so
+# every kilobyte is paid for up front and forever; the compute budget, not raw
+# instruction throughput, is what bounds execution here.
+opt-level = "z"
+strip = true
+panic = "abort"
+
+[profile.release.build-override]
+opt-level = 3
+incremental = false
+codegen-units = 1

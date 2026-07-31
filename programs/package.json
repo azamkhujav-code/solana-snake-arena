@@ -1,0 +1,29 @@
+{
+  "name": "@arena/programs",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "description": "Anchor workspace for the on-chain arena program (Solana devnet).",
+  "scripts": {
+    "build:anchor": "anchor build",
+    "test:anchor": "anchor test --skip-local-validator",
+    "test:local": "anchor test",
+    "deploy:devnet": "anchor deploy --provider.cluster devnet",
+    "upgrade:devnet": "anchor upgrade --provider.cluster devnet --program-id $ARENA_PROGRAM_ID target/deploy/arena.so",
+    "keys:sync": "anchor keys sync",
+    "lint:rust": "cargo fmt --check && cargo clippy -- -D warnings",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "clean": "rimraf target .anchor"
+  },
+  "dependencies": {
+    "@coral-xyz/anchor": "^0.32.1",
+    "@solana/web3.js": "^1.98.4"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.5",
+    "rimraf": "^6.0.1",
+    "tsx": "^4.23.1",
+    "typescript": "^5.9.3"
+  }
+}

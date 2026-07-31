@@ -1,0 +1,3 @@
+# Typecheck only. Full lint and tests run in CI — blocking every push on the
+# whole suite trains people to use --no-verify, which defeats the hook.
+pnpm turbo run typecheck

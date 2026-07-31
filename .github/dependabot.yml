@@ -1,0 +1,34 @@
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 10
+    groups:
+      # One PR per ecosystem rather than dozens; a monorepo generates a lot of
+      # noise otherwise.
+      react:
+        patterns: ["react", "react-dom", "@types/react", "@types/react-dom", "next"]
+      solana:
+        patterns: ["@solana/*", "@coral-xyz/*"]
+      tooling:
+        patterns: ["eslint*", "prettier*", "typescript", "turbo", "vitest*"]
+      fastify:
+        patterns: ["fastify", "@fastify/*"]
+
+  - package-ecosystem: cargo
+    directory: "/programs"
+    schedule:
+      interval: monthly
+
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: monthly
+
+  - package-ecosystem: docker
+    directory: "/infra/docker"
+    schedule:
+      interval: monthly

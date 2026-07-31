@@ -1,0 +1,33 @@
+[toolchain]
+anchor_version = "0.32.1"
+
+[features]
+resolution = true
+skip-lint = false
+
+[programs.devnet]
+arena = "4y2eaLGzqmfFrMTAhVzruQ4BeuHsBZCdAR52FBFkJ9hc"
+
+[programs.localnet]
+arena = "4y2eaLGzqmfFrMTAhVzruQ4BeuHsBZCdAR52FBFkJ9hc"
+
+[registry]
+url = "https://api.apr.dev"
+
+# Default to localnet so `anchor test` spins up a throwaway validator. The tests
+# create rooms and move lamports; pointing the default at devnet would run them
+# against shared state and burn airdropped SOL on every invocation.
+# Deploys pass `--provider.cluster devnet` explicitly (see package.json).
+[provider]
+cluster = "localnet"
+wallet = "~/.config/solana/id.json"
+
+[scripts]
+test = "tsx --test tests/**/*.test.ts"
+
+[test]
+startup_wait = 15000
+
+[test.validator]
+bind_address = "0.0.0.0"
+ledger = ".anchor/test-ledger"

@@ -1,0 +1,7 @@
+# Host toolchain for `cargo check` / `clippy` / `fmt`.
+#
+# The on-chain build uses Solana's platform-tools Rust, which `cargo build-sbf`
+# selects independently of this pin — this only governs host-side tooling.
+[toolchain]
+channel = "1.93.0"
+components = ["rustfmt", "clippy"]

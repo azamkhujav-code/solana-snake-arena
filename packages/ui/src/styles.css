@@ -1,0 +1,17 @@
+/*
+ * Design tokens shared by every surface.
+ *
+ * Imported by apps/web/src/app/globals.css after the Tailwind import so the
+ * @theme block can reference these values.
+ */
+
+@theme {
+  --color-arena-bg: oklch(0.16 0.02 260);
+  --color-arena-surface: oklch(0.22 0.02 260);
+  --color-arena-accent: oklch(0.78 0.17 155);
+  --color-arena-danger: oklch(0.63 0.22 15);
+
+  --font-display: 'Inter', system-ui, sans-serif;
+
+  --radius-hud: 0.75rem;
+}

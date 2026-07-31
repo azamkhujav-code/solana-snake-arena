@@ -1,0 +1,65 @@
+{
+  "$schema": "https://turbo.build/schema.json",
+  "ui": "tui",
+  "globalDependencies": ["tsconfig.base.json", ".env"],
+  "globalEnv": [
+    "NODE_ENV",
+    "CI",
+    "VERCEL",
+    "GIT_SHA",
+    "SERVICE_NAME",
+    "LOG_LEVEL",
+    "LOG_PRETTY",
+    "DEPLOY_REGION",
+    "ARENA_DRAINING"
+  ],
+  "globalPassThroughEnv": ["PATH", "HOME", "SHELL"],
+  "remoteCache": {
+    "signature": true
+  },
+  "tasks": {
+    "build": {
+      "dependsOn": ["^build"],
+      "inputs": ["$TURBO_DEFAULT$", "!**/*.test.ts", "!**/*.test.tsx", "!README.md"],
+      "outputs": [".next/**", "!.next/cache/**", "dist/**", "build/**", "generated/**"],
+      "env": ["NEXT_PUBLIC_*", "DATABASE_URL", "ANALYZE"]
+    },
+    "dev": {
+      "cache": false,
+      "persistent": true,
+      "dependsOn": ["^build"]
+    },
+    "start": {
+      "cache": false,
+      "persistent": true,
+      "dependsOn": ["build"]
+    },
+    "lint": {
+      "dependsOn": ["^build"],
+      "outputs": []
+    },
+    "typecheck": {
+      "dependsOn": ["^build"],
+      "outputs": []
+    },
+    "test": {
+      "dependsOn": ["^build"],
+      "outputs": ["coverage/**"]
+    },
+    "test:watch": {
+      "cache": false,
+      "persistent": true
+    },
+    "clean": {
+      "cache": false
+    },
+    "@arena/db#generate": {
+      "inputs": ["prisma/schema.prisma", "prisma/schema/**"],
+      "outputs": ["generated/**", "../../node_modules/.prisma/**"]
+    },
+    "@arena/ui#build": {
+      "dependsOn": ["^build"],
+      "outputs": []
+    }
+  }
+}

@@ -1,0 +1,863 @@
+// Slither Arena — data model.
+//
+// See docs/DATA-MODEL.md for a table-by-table explanation of why each one
+// exists and how it is meant to be queried.
+//
+// Conventions used throughout:
+//   * Money is always BigInt lamports. Never a float — 0.1 + 0.2 problems in a
+//     ledger are unrecoverable.
+//   * Tables and columns are snake_case via @map; the Prisma API stays camelCase.
+//   * Anything that can be retried from the outside carries an idempotencyKey
+//     with a unique constraint. That constraint, not application logic, is what
+//     actually prevents double payouts.
+//   * High-volume tables (games, game_players, transactions, match_history) are
+//     append-only and are intended for range partitioning by their time column
+//     once volume justifies it.
+//
+// Sizing note: nothing on the hot game loop touches Postgres. Live state lives
+// in the realtime node's memory with Redis for coordination; rows here are
+// written asynchronously when a game ends.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  // Migrations must bypass PgBouncer's transaction pooling.
+  directUrl = env("DIRECT_DATABASE_URL")
+}
+
+// ============================================================================
+// Identity
+// ============================================================================
+
+/// A person. Deliberately separate from Wallet: a player may connect a hardware
+/// wallet for withdrawals and a hot wallet for play, and both must resolve to
+/// one identity, one balance and one leaderboard entry.
+model User {
+  id          String     @id @default(uuid()) @db.Uuid
+  /// Public handle. Nullable until the player picks one.
+  username    String?    @unique @db.VarChar(16)
+  displayName String?    @map("display_name") @db.VarChar(32)
+  avatarUrl   String?    @map("avatar_url") @db.VarChar(512)
+  skinId      String?    @map("skin_id") @db.VarChar(64)
+  role        UserRole   @default(PLAYER)
+  status      UserStatus @default(ACTIVE)
+
+  /// Denormalised aggregates. Updated by a background job, never on the write
+  /// path, so a finished game never blocks on a lock-heavy UPDATE.
+  gamesPlayed          Int    @default(0) @map("games_played")
+  wins                 Int    @default(0)
+  kills                Int    @default(0)
+  deaths               Int    @default(0)
+  bestScore            Int    @default(0) @map("best_score")
+  totalPlaytimeSeconds Int    @default(0) @map("total_playtime_seconds")
+  lifetimeWagered      BigInt @default(0) @map("lifetime_wagered")
+  lifetimeWon          BigInt @default(0) @map("lifetime_won")
+
+  createdAt  DateTime  @default(now()) @map("created_at")
+  updatedAt  DateTime  @updatedAt @map("updated_at")
+  lastSeenAt DateTime? @map("last_seen_at")
+  /// Soft delete. Financial history must survive account closure.
+  deletedAt  DateTime? @map("deleted_at")
+
+  wallets             Wallet[]
+  ownedRooms          Room[]         @relation("RoomOwner")
+  gamePlayers         GamePlayer[]
+  deposits            Deposit[]
+  withdrawals         Withdrawal[]   @relation("WithdrawalOwner")
+  reviewedWithdrawals Withdrawal[]   @relation("WithdrawalReviewer")
+  transactions        Transaction[]
+  custodyAccounts     PoolAccount[]  @relation("PoolAccountOwner")
+  rewards             Reward[]
+  leaderboardEntries  Leaderboard[]
+  matchHistory        MatchHistory[]
+  refreshTokens       RefreshToken[]
+  stakeReservations   StakeReservation[]
+  auditLogs           AuditLog[]
+
+  @@index([lastSeenAt(sort: Desc)])
+  @@index([bestScore(sort: Desc)])
+  @@index([status])
+  @@map("users")
+}
+
+enum UserRole {
+  PLAYER
+  MODERATOR
+  ADMIN
+
+  @@map("user_role")
+}
+
+enum UserStatus {
+  ACTIVE
+  /// Can still play, but is silently excluded from public leaderboards.
+  SHADOWBANNED
+  BANNED
+  CLOSED
+
+  @@map("user_status")
+}
+
+/// A blockchain address proven to belong to a User by an ed25519 signature.
+///
+/// One user may hold several. `isPrimary` marks the default payout destination.
+/// TODO: enforce one primary per user with a partial unique index —
+/// CREATE UNIQUE INDEX wallets_one_primary ON wallets (user_id) WHERE is_primary;
+/// Prisma cannot express partial uniques, so it is app-enforced for now.
+model Wallet {
+  id        String  @id @default(uuid()) @db.Uuid
+  userId    String  @map("user_id") @db.Uuid
+  /// Base58 Solana address. Globally unique — one address, one owner.
+  address   String  @unique @db.VarChar(44)
+  chain     Chain   @default(SOLANA)
+  isPrimary Boolean @default(false) @map("is_primary")
+  label     String? @db.VarChar(32)
+
+  /// Set when the signature challenge succeeded. Null means unproven, and an
+  /// unproven wallet must never receive a withdrawal.
+  verifiedAt DateTime? @map("verified_at")
+  createdAt  DateTime  @default(now()) @map("created_at")
+  updatedAt  DateTime  @updatedAt @map("updated_at")
+
+  user        User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  deposits    Deposit[]
+  withdrawals Withdrawal[]
+  gamePlayers GamePlayer[]
+
+  @@unique([userId, address])
+  @@index([userId, isPrimary])
+  @@map("wallets")
+}
+
+enum Chain {
+  SOLANA
+
+  @@map("chain")
+}
+
+// ============================================================================
+// Gameplay
+// ============================================================================
+
+/// A configured arena. Long-lived: a room outlives the individual games played
+/// inside it, which is what lets a private room keep a stable join code and
+/// lets analytics group games by arena configuration.
+model Room {
+  id         String         @id @default(uuid()) @db.Uuid
+  /// Short shareable join code for private rooms.
+  code       String         @unique @db.VarChar(12)
+  name       String?        @db.VarChar(48)
+  mode       GameMode       @default(CASUAL)
+  region     Region         @default(US_EAST)
+  visibility RoomVisibility @default(PUBLIC)
+  status     RoomStatus     @default(ACTIVE)
+
+  /// Seat limit, or NULL for no limit. Every tier is currently NULL — nobody is
+  /// turned away from a room they want to play.
+  maxPlayers       Int?   @map("max_players")
+  entryFeeLamports BigInt @default(0) @map("entry_fee_lamports")
+  /// House rake in basis points, mirrored by the on-chain config.
+  rakeBps          Int    @default(0) @map("rake_bps")
+
+  /// Realtime node currently hosting this room. Null when unassigned.
+  nodeId  String? @map("node_id") @db.VarChar(64)
+  ownerId String? @map("owner_id") @db.Uuid
+
+  createdAt DateTime  @default(now()) @map("created_at")
+  updatedAt DateTime  @updatedAt @map("updated_at")
+  closedAt  DateTime? @map("closed_at")
+
+  owner        User?          @relation("RoomOwner", fields: [ownerId], references: [id], onDelete: SetNull)
+  games        Game[]
+  matchHistory MatchHistory[]
+
+  // Drives the lobby's "open public rooms in my region" query.
+  @@index([status, visibility, region, mode])
+  @@index([nodeId])
+  @@index([ownerId])
+  @@map("rooms")
+}
+
+enum RoomVisibility {
+  PUBLIC
+  PRIVATE
+
+  @@map("room_visibility")
+}
+
+enum RoomStatus {
+  ACTIVE
+  /// Accepting no new players while existing games finish.
+  DRAINING
+  CLOSED
+
+  @@map("room_status")
+}
+
+enum GameMode {
+  CASUAL
+  RANKED
+  WAGER
+
+  @@map("game_mode")
+}
+
+enum Region {
+  US_EAST
+  US_WEST
+  EU_WEST
+  AP_SOUTHEAST
+
+  @@map("region")
+}
+
+/// One match played inside a Room. Append-only, and the parent of every
+/// financial record produced by that match.
+model Game {
+  id     String     @id @default(uuid()) @db.Uuid
+  roomId String     @map("room_id") @db.Uuid
+  status GameStatus @default(PENDING)
+
+  /// RNG seed. Stored so a match can be deterministically replayed from the
+  /// recorded inputs when a result is disputed.
+  seed   BigInt
+  nodeId String @map("node_id") @db.VarChar(64)
+
+  playerCount    Int    @default(0) @map("player_count")
+  potLamports    BigInt @default(0) @map("pot_lamports")
+  rakeLamports   BigInt @default(0) @map("rake_lamports")
+  payoutLamports BigInt @default(0) @map("payout_lamports")
+
+  /// On-chain escrow PDA and the settlement transaction, once confirmed.
+  onchainMatchPda     String?          @map("onchain_match_pda") @db.VarChar(44)
+  settlementSignature String?          @unique @map("settlement_signature") @db.VarChar(96)
+  settlementStatus    SettlementStatus @default(NOT_REQUIRED) @map("settlement_status")
+  settlementAttempts  Int              @default(0) @map("settlement_attempts")
+  settlementError     String?          @map("settlement_error")
+
+  startedAt DateTime  @default(now()) @map("started_at")
+  endedAt   DateTime? @map("ended_at")
+
+  room         Room           @relation(fields: [roomId], references: [id], onDelete: Restrict)
+  escrow       PoolAccount?   @relation("GameEscrow")
+  gamePlayers  GamePlayer[]
+  transactions Transaction[]
+  rewards      Reward[]
+  matchHistory MatchHistory[]
+
+  // Partition key candidate. Also the ordering for "recent games" views.
+  @@index([startedAt(sort: Desc)])
+  @@index([roomId, startedAt(sort: Desc)])
+  @@index([status])
+  // Finds games whose payout is stuck, for the settlement retry worker.
+  @@index([settlementStatus, endedAt])
+  @@map("games")
+}
+
+enum GameStatus {
+  PENDING
+  RUNNING
+  COMPLETED
+  /// Ended without a valid result; entry fees are refunded.
+  CANCELLED
+
+  @@map("game_status")
+}
+
+enum SettlementStatus {
+  /// Free-to-play match — nothing to settle.
+  NOT_REQUIRED
+  PENDING
+  SUBMITTED
+  CONFIRMED
+  FAILED
+
+  @@map("settlement_status")
+}
+
+/// One user's participation in one game: the join record and the result.
+/// The highest-volume gameplay table.
+model GamePlayer {
+  id       String  @id @default(uuid()) @db.Uuid
+  gameId   String  @map("game_id") @db.Uuid
+  userId   String  @map("user_id") @db.Uuid
+  /// Which wallet staked the entry fee. Pinned at join time so a later primary
+  /// wallet change cannot redirect an in-flight payout.
+  walletId String? @map("wallet_id") @db.Uuid
+
+  nickname String @db.VarChar(16)
+
+  placement  Int? @default(0)
+  score      Int  @default(0)
+  kills      Int  @default(0)
+  maxMass    Int  @default(0) @map("max_mass")
+  survivedMs Int  @default(0) @map("survived_ms")
+
+  entryPaidLamports BigInt @default(0) @map("entry_paid_lamports")
+  payoutLamports    BigInt @default(0) @map("payout_lamports")
+
+  /// Which participant killed this one. Self-referential and nullable — a wall
+  /// death or a disconnect has no killer.
+  killedById String?          @map("killed_by_id") @db.Uuid
+  deathCause DeathCause?      @map("death_cause")
+  result     ParticipantState @default(PLAYING)
+
+  joinedAt DateTime  @default(now()) @map("joined_at")
+  leftAt   DateTime? @map("left_at")
+
+  game     Game         @relation(fields: [gameId], references: [id], onDelete: Cascade)
+  user     User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  wallet   Wallet?      @relation(fields: [walletId], references: [id], onDelete: SetNull)
+  killedBy GamePlayer?  @relation("Eliminations", fields: [killedById], references: [id], onDelete: SetNull)
+  victims  GamePlayer[] @relation("Eliminations")
+
+  /// One row per user per game. This is the constraint that makes a retried
+  /// join idempotent instead of duplicating a paid entry.
+  @@unique([gameId, userId])
+  @@index([userId, joinedAt(sort: Desc)])
+  @@index([gameId, placement])
+  @@index([killedById])
+  @@index([walletId])
+  @@map("game_players")
+}
+
+enum DeathCause {
+  COLLISION
+  WALL
+  DISCONNECT
+  KICKED
+
+  @@map("death_cause")
+}
+
+enum ParticipantState {
+  PLAYING
+  ELIMINATED
+  SURVIVED
+  FORFEITED
+
+  @@map("participant_state")
+}
+
+// ============================================================================
+// Money
+// ============================================================================
+
+/// A named balance the platform controls.
+///
+/// Every lamport in the system sits in exactly one pool account, including each
+/// user's custody balance. Modelling user balances as pool accounts rather than
+/// a column on `users` is what makes the ledger balance: the sum of all pool
+/// balances equals the sum of all posted transactions, and that invariant is
+/// checkable by a cron job.
+model PoolAccount {
+  id   String          @id @default(uuid()) @db.Uuid
+  kind PoolAccountKind
+  /// Human label, e.g. "treasury" or "custody:<userId>".
+  name String          @unique @db.VarChar(96)
+
+  /// Set for USER_CUSTODY accounts.
+  ownerUserId String? @unique @map("owner_user_id") @db.Uuid
+  /// Set for GAME_ESCROW accounts. Unique — one escrow per game.
+  gameId      String? @unique @map("game_id") @db.Uuid
+
+  balanceLamports  BigInt @default(0) @map("balance_lamports")
+  /// Funds committed to an in-flight game or withdrawal. Spendable balance is
+  /// `balance - reserved`, which is what stops a player wagering the same
+  /// lamports in two rooms at once.
+  reservedLamports BigInt @default(0) @map("reserved_lamports")
+
+  /// Optimistic-locking counter. Every balance write bumps it and asserts the
+  /// prior value, so two concurrent settlements cannot both read-modify-write.
+  version Int @default(0)
+
+  /// On-chain vault PDA backing this pool, where one exists.
+  onchainAddress String? @map("onchain_address") @db.VarChar(44)
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  owner        User?         @relation("PoolAccountOwner", fields: [ownerUserId], references: [id], onDelete: SetNull)
+  game         Game?         @relation("GameEscrow", fields: [gameId], references: [id], onDelete: SetNull)
+  transactions Transaction[]
+  deposits     Deposit[]
+
+  @@index([kind])
+  @@map("pool_accounts")
+}
+
+enum PoolAccountKind {
+  /// Per-user spendable balance.
+  USER_CUSTODY
+  /// Holds entry fees for one game until settlement.
+  GAME_ESCROW
+  /// House funds.
+  TREASURY
+  /// Accumulated rake, swept to treasury.
+  RAKE
+  /// Funds earmarked for bonuses and promotions.
+  REWARDS
+  /// The outside world — player wallets on chain.
+  ///
+  /// Needed so double-entry balances when money enters or leaves the platform:
+  /// a deposit debits EXTERNAL and credits custody, a withdrawal does the
+  /// reverse. This is the one account allowed to hold a negative balance, since
+  /// it mirrors net inflow rather than funds the platform holds.
+  EXTERNAL
+
+  @@map("pool_account_kind")
+}
+
+/// The immutable double-entry ledger. Every movement of value is a row here.
+///
+/// Rows are never updated or deleted — a mistake is corrected by posting a
+/// compensating entry. `entryGroupId` ties together the legs of one logical
+/// transfer, so the debit and the matching credit can always be reconciled.
+model Transaction {
+  id           String               @id @default(uuid()) @db.Uuid
+  /// Groups the legs of one transfer. Legs in a group must sum to zero.
+  entryGroupId String               @map("entry_group_id") @db.Uuid
+  type         TransactionType
+  direction    TransactionDirection
+  status       TransactionStatus    @default(POSTED)
+
+  /// Always positive; `direction` carries the sign.
+  amountLamports       BigInt @map("amount_lamports")
+  /// Pool balance immediately after this entry. Lets an auditor replay history
+  /// without recomputing every prior row.
+  balanceAfterLamports BigInt @map("balance_after_lamports")
+
+  userId        String? @map("user_id") @db.Uuid
+  poolAccountId String  @map("pool_account_id") @db.Uuid
+
+  /// Whichever business object caused this entry. Exactly one is set.
+  gameId       String? @map("game_id") @db.Uuid
+  depositId    String? @map("deposit_id") @db.Uuid
+  withdrawalId String? @map("withdrawal_id") @db.Uuid
+  rewardId     String? @map("reward_id") @db.Uuid
+
+  /// Makes posting retry-safe. A duplicated settlement message with the same
+  /// key hits this constraint instead of paying twice.
+  idempotencyKey String @unique @map("idempotency_key") @db.VarChar(128)
+
+  description String? @db.VarChar(256)
+  metadata    Json?
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  user        User?       @relation(fields: [userId], references: [id], onDelete: SetNull)
+  poolAccount PoolAccount @relation(fields: [poolAccountId], references: [id], onDelete: Restrict)
+  game        Game?       @relation(fields: [gameId], references: [id], onDelete: SetNull)
+  deposit     Deposit?    @relation(fields: [depositId], references: [id], onDelete: SetNull)
+  withdrawal  Withdrawal? @relation(fields: [withdrawalId], references: [id], onDelete: SetNull)
+  reward      Reward?     @relation(fields: [rewardId], references: [id], onDelete: SetNull)
+
+  @@index([entryGroupId])
+  @@index([userId, createdAt(sort: Desc)])
+  @@index([poolAccountId, createdAt(sort: Desc)])
+  @@index([type, createdAt(sort: Desc)])
+  @@index([gameId])
+  @@index([createdAt(sort: Desc)])
+  @@map("transactions")
+}
+
+enum TransactionType {
+  DEPOSIT
+  WITHDRAWAL
+  ENTRY_FEE
+  PAYOUT
+  RAKE
+  REWARD
+  REFUND
+  TRANSFER
+  /// Manual correction. Always paired with an audit_logs entry.
+  ADJUSTMENT
+
+  @@map("transaction_type")
+}
+
+enum TransactionDirection {
+  CREDIT
+  DEBIT
+
+  @@map("transaction_direction")
+}
+
+enum TransactionStatus {
+  PENDING
+  POSTED
+  /// Superseded by a compensating entry; kept for the audit trail.
+  REVERSED
+
+  @@map("transaction_status")
+}
+
+/// An on-chain transfer into the platform.
+///
+/// Separate from Transaction because a deposit has a lifecycle before it
+/// becomes money: it is observed on chain, waits for confirmations, and only
+/// then posts a ledger entry.
+model Deposit {
+  id       String        @id @default(uuid()) @db.Uuid
+  userId   String        @map("user_id") @db.Uuid
+  walletId String        @map("wallet_id") @db.Uuid
+  status   DepositStatus @default(PENDING)
+
+  amountLamports BigInt @map("amount_lamports")
+
+  /// Solana transaction signature. Unique — the same on-chain transfer must
+  /// never be credited twice, and this constraint is what guarantees it.
+  txSignature   String? @unique @map("tx_signature") @db.VarChar(96)
+  slot          BigInt?
+  confirmations Int     @default(0)
+
+  /// Destination custody pool.
+  poolAccountId String? @map("pool_account_id") @db.Uuid
+
+  idempotencyKey String  @unique @map("idempotency_key") @db.VarChar(128)
+  failureReason  String? @map("failure_reason") @db.VarChar(256)
+
+  createdAt   DateTime  @default(now()) @map("created_at")
+  confirmedAt DateTime? @map("confirmed_at")
+
+  user         User          @relation(fields: [userId], references: [id], onDelete: Restrict)
+  wallet       Wallet        @relation(fields: [walletId], references: [id], onDelete: Restrict)
+  poolAccount  PoolAccount?  @relation(fields: [poolAccountId], references: [id], onDelete: SetNull)
+  transactions Transaction[]
+
+  @@index([userId, createdAt(sort: Desc)])
+  // Drives the confirmation-poller query.
+  @@index([status, createdAt])
+  @@index([walletId])
+  @@map("deposits")
+}
+
+enum DepositStatus {
+  PENDING
+  CONFIRMED
+  FAILED
+  /// Never observed on chain within the expected window.
+  EXPIRED
+
+  @@map("deposit_status")
+}
+
+/// An outbound transfer to a user's wallet.
+///
+/// Kept distinct from Deposit because the risk profile is opposite: deposits
+/// are safe to process automatically, withdrawals may need review, and both
+/// need an approval trail.
+model Withdrawal {
+  id       String           @id @default(uuid()) @db.Uuid
+  userId   String           @map("user_id") @db.Uuid
+  /// Destination. Must be a verified wallet.
+  walletId String           @map("wallet_id") @db.Uuid
+  status   WithdrawalStatus @default(REQUESTED)
+
+  amountLamports BigInt @map("amount_lamports")
+  /// Network fee absorbed from the amount.
+  feeLamports    BigInt @default(0) @map("fee_lamports")
+
+  txSignature String? @unique @map("tx_signature") @db.VarChar(96)
+
+  idempotencyKey String  @unique @map("idempotency_key") @db.VarChar(128)
+  failureReason  String? @map("failure_reason") @db.VarChar(256)
+
+  /// Manual-review trail for large or flagged withdrawals.
+  reviewedById String? @map("reviewed_by_id") @db.Uuid
+  reviewNote   String? @map("review_note") @db.VarChar(256)
+
+  requestedAt DateTime  @default(now()) @map("requested_at")
+  approvedAt  DateTime? @map("approved_at")
+  confirmedAt DateTime? @map("confirmed_at")
+
+  user         User          @relation("WithdrawalOwner", fields: [userId], references: [id], onDelete: Restrict)
+  reviewedBy   User?         @relation("WithdrawalReviewer", fields: [reviewedById], references: [id], onDelete: SetNull)
+  wallet       Wallet        @relation(fields: [walletId], references: [id], onDelete: Restrict)
+  transactions Transaction[]
+
+  @@index([userId, requestedAt(sort: Desc)])
+  // Drives the payout worker and the review queue.
+  @@index([status, requestedAt])
+  @@index([walletId])
+  @@index([reviewedById])
+  @@map("withdrawals")
+}
+
+enum WithdrawalStatus {
+  REQUESTED
+  /// Held for manual review.
+  PENDING_REVIEW
+  APPROVED
+  SUBMITTED
+  CONFIRMED
+  FAILED
+  REJECTED
+
+  @@map("withdrawal_status")
+}
+
+/// A grant of value that did not come from a deposit — daily bonuses, referral
+/// credit, tournament prizes, achievements.
+///
+/// Modelled as its own lifecycle rather than a bare ledger entry because a
+/// reward can be granted now and claimed later, or expire unclaimed.
+model Reward {
+  id     String       @id @default(uuid()) @db.Uuid
+  userId String       @map("user_id") @db.Uuid
+  kind   RewardKind
+  status RewardStatus @default(PENDING)
+
+  amountLamports BigInt @map("amount_lamports")
+
+  /// Set when the reward came from a specific match.
+  gameId String? @map("game_id") @db.Uuid
+
+  /// Prevents granting the same daily bonus twice — the key encodes the user
+  /// and the period, e.g. "daily:<userId>:2026-07-30".
+  idempotencyKey String @unique @map("idempotency_key") @db.VarChar(128)
+
+  metadata Json?
+
+  createdAt DateTime  @default(now()) @map("created_at")
+  grantedAt DateTime? @map("granted_at")
+  claimedAt DateTime? @map("claimed_at")
+  expiresAt DateTime? @map("expires_at")
+
+  user         User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  game         Game?         @relation(fields: [gameId], references: [id], onDelete: SetNull)
+  transactions Transaction[]
+
+  @@index([userId, createdAt(sort: Desc)])
+  @@index([status, expiresAt])
+  @@index([kind])
+  @@index([gameId])
+  @@map("rewards")
+}
+
+enum RewardKind {
+  DAILY_BONUS
+  REFERRAL
+  TOURNAMENT
+  ACHIEVEMENT
+  PROMO
+  /// Goodwill credit issued by support.
+  COMPENSATION
+
+  @@map("reward_kind")
+}
+
+enum RewardStatus {
+  PENDING
+  GRANTED
+  CLAIMED
+  EXPIRED
+  REVOKED
+
+  @@map("reward_status")
+}
+
+// ============================================================================
+// Read models
+// ============================================================================
+
+/// Materialised ranking snapshot.
+///
+/// The live board is a Redis sorted set — a global ORDER BY over game_players
+/// cannot hold up at this scale. This table is the durable periodic snapshot:
+/// it survives a Redis flush, backs "your rank on 12 March" queries, and is the
+/// source of truth when prizes are paid against a finished period.
+model Leaderboard {
+  id        String            @id @default(uuid()) @db.Uuid
+  /// Mapped to `window_type`: `window` is a reserved word in PostgreSQL.
+  /// Prisma quotes identifiers so it would work, but every hand-written query
+  /// and psql session would need quoting too. Not worth the trap.
+  window    LeaderboardWindow @map("window_type")
+  /// Identifies the period within the window: "2026-07-30", "2026-W31",
+  /// "2026-07", or "all".
+  periodKey String            @map("period_key") @db.VarChar(16)
+  userId    String            @map("user_id") @db.Uuid
+
+  rank        Int
+  score       BigInt
+  gamesPlayed Int    @default(0) @map("games_played")
+  wins        Int    @default(0)
+  kills       Int    @default(0)
+
+  /// True once the period has closed and the ranking is final.
+  finalized  Boolean  @default(false)
+  computedAt DateTime @default(now()) @map("computed_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  /// One row per user per period. Recomputation is an upsert on this key.
+  @@unique([window, periodKey, userId])
+  /// Covers the primary read: top N of a period, in rank order.
+  @@index([window, periodKey, rank])
+  @@index([userId, window])
+  @@map("leaderboard")
+}
+
+enum LeaderboardWindow {
+  DAILY
+  WEEKLY
+  MONTHLY
+  ALL_TIME
+  SEASON
+
+  @@map("leaderboard_window")
+}
+
+/// Denormalised per-user match history.
+///
+/// A read model, not a source of truth: every column is derivable by joining
+/// games, game_players and rooms. It exists because the profile page is one of
+/// the most requested views in the product, and a three-table join ordered by
+/// time over hundreds of millions of rows is exactly the query that falls over
+/// first. Written once when a game completes; never updated.
+model MatchHistory {
+  id     String @id @default(uuid()) @db.Uuid
+  userId String @map("user_id") @db.Uuid
+  gameId String @map("game_id") @db.Uuid
+  roomId String @map("room_id") @db.Uuid
+
+  /// Copied from the room so the history view needs no join.
+  mode   GameMode
+  region Region
+
+  placement  Int?
+  score      Int  @default(0)
+  kills      Int  @default(0)
+  survivedMs Int  @default(0) @map("survived_ms")
+
+  entryLamports  BigInt @default(0) @map("entry_lamports")
+  payoutLamports BigInt @default(0) @map("payout_lamports")
+  /// payout - entry. Stored so profit/loss charts avoid arithmetic per row.
+  netLamports    BigInt @default(0) @map("net_lamports")
+
+  playedAt DateTime @map("played_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  game Game @relation(fields: [gameId], references: [id], onDelete: Cascade)
+  room Room @relation(fields: [roomId], references: [id], onDelete: Cascade)
+
+  /// Makes the projection idempotent — replaying the writer cannot duplicate.
+  @@unique([userId, gameId])
+  /// The one query this table exists to serve.
+  @@index([userId, playedAt(sort: Desc)])
+  @@index([gameId])
+  @@index([mode, playedAt(sort: Desc)])
+  @@map("match_history")
+}
+
+// ============================================================================
+// Supporting
+// ============================================================================
+
+/// Refresh-token family, for rotation and theft detection. The access token is
+/// a stateless JWT and is never stored.
+/// A player's committed entry fee for a room they have queued for.
+///
+/// The lamports stay in the player's custody account but stop being spendable,
+/// so one balance cannot stake three rooms at once and a pending withdrawal
+/// cannot drain money a match is about to lock on chain.
+///
+/// Deleted in one of two ways, which must never be confused: `releaseEntryFee`
+/// hands the money back when a player leaves, `consumeReservations` spends it
+/// when the stake is locked into the room vault.
+model StakeReservation {
+  id     String @id @default(uuid()) @db.Uuid
+  userId String @map("user_id") @db.Uuid
+  /// Room tier id, e.g. `gold`. Not a `rooms.id` — a player queues for a tier
+  /// before the game row for that cycle exists.
+  tierId String @map("tier_id") @db.VarChar(32)
+
+  lamports BigInt
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  /// One reservation per player per tier. This is the constraint that makes a
+  /// double-clicked join idempotent rather than charging twice.
+  @@unique([userId, tierId])
+  @@index([tierId])
+  @@map("stake_reservations")
+}
+
+model RefreshToken {
+  id        String    @id @default(uuid()) @db.Uuid
+  userId    String    @map("user_id") @db.Uuid
+  familyId  String    @map("family_id") @db.Uuid
+  /// SHA-256 of the token. The token itself is never persisted.
+  tokenHash String    @unique @map("token_hash") @db.VarChar(64)
+  userAgent String?   @map("user_agent") @db.VarChar(256)
+  ipHash    String?   @map("ip_hash") @db.VarChar(64)
+  expiresAt DateTime  @map("expires_at")
+  revokedAt DateTime? @map("revoked_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, revokedAt])
+  @@index([familyId])
+  @@index([expiresAt])
+  @@map("refresh_tokens")
+}
+
+/// Cosmetic skins, some gated behind an on-chain NFT collection.
+model Skin {
+  id             String   @id @db.VarChar(64)
+  name           String   @db.VarChar(64)
+  rarity         Rarity   @default(COMMON)
+  priceLamports  BigInt   @default(0) @map("price_lamports")
+  /// When set, ownership is verified against this Metaplex collection mint.
+  collectionMint String?  @map("collection_mint") @db.VarChar(44)
+  active         Boolean  @default(true)
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  @@index([active])
+  @@map("skins")
+}
+
+enum Rarity {
+  COMMON
+  RARE
+  EPIC
+  LEGENDARY
+
+  @@map("rarity")
+}
+
+/// Anti-cheat, moderation and financial-adjustment trail. Append-only.
+model AuditLog {
+  id       BigInt   @id @default(autoincrement())
+  userId   String?  @map("user_id") @db.Uuid
+  actorId  String?  @map("actor_id") @db.Uuid
+  action   String   @db.VarChar(64)
+  severity Severity @default(INFO)
+  /// Free-form context: the signals that triggered it, before/after values.
+  metadata Json?
+  ipHash   String?  @map("ip_hash") @db.VarChar(64)
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  user User? @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([userId, createdAt(sort: Desc)])
+  @@index([action, createdAt(sort: Desc)])
+  @@index([severity, createdAt(sort: Desc)])
+  @@map("audit_logs")
+}
+
+enum Severity {
+  INFO
+  WARN
+  CRITICAL
+
+  @@map("severity")
+}

@@ -1,0 +1,12 @@
+{
+  "recommendations": [
+    "dbaeumer.vscode-eslint",
+    "esbenp.prettier-vscode",
+    "bradlc.vscode-tailwindcss",
+    "prisma.prisma",
+    "rust-lang.rust-analyzer",
+    "tamasfe.even-better-toml",
+    "ms-azuretools.vscode-docker",
+    "yoavbls.pretty-ts-errors"
+  ]
+}

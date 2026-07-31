@@ -1,0 +1,60 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Build output
+dist/
+build/
+out/
+.next/
+.turbo/
+*.tsbuildinfo
+generated/
+
+# Environment
+.env
+.env.*
+!.env.example
+!.env.test.example
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+# Testing
+coverage/
+.nyc_output/
+
+# Editors
+.idea/
+*.swp
+.DS_Store
+
+# Anchor / Solana
+programs/target/
+programs/.anchor/
+programs/test-ledger/
+**/*.rs.bk
+*-keypair.json
+!programs/keys/*.pub.json
+
+# Docker volumes (local bind mounts)
+.docker-data/
+
+# Misc
+.eslintcache
+.vercel
+
+# Playwright
+test-results/
+playwright-report/
+tests/e2e/.artifacts/
+.playwright/
+
+# Local dev stack (Redis config/log written by the run-local setup)
+.localdev/
+
+# Throwaway devnet keypair from `pnpm wallet new`
+.localdev/test-wallet.json

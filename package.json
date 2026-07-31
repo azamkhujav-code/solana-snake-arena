@@ -1,0 +1,106 @@
+{
+  "name": "slither-arena",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Browser-based multiplayer Slither.io-style game on Solana. Turborepo monorepo.",
+  "license": "MIT",
+  "packageManager": "pnpm@9.12.3",
+  "engines": {
+    "node": ">=22.22.1",
+    "pnpm": ">=9.12.0"
+  },
+  "scripts": {
+    "anchor:build": "pnpm --filter @arena/programs build:anchor",
+    "anchor:deploy": "pnpm --filter @arena/programs deploy:devnet",
+    "anchor:test": "pnpm --filter @arena/programs test:anchor",
+    "build": "turbo run build",
+    "clean": "turbo run clean && rimraf node_modules .turbo",
+    "credit": "pnpm --filter @arena/db exec dotenv -e ../../.env -- tsx scripts/dev-credit.ts",
+    "db:deploy": "pnpm --filter @arena/db migrate:deploy",
+    "db:generate": "pnpm --filter @arena/db generate",
+    "db:migrate": "pnpm --filter @arena/db migrate:dev",
+    "db:push": "pnpm --filter @arena/db push",
+    "db:reset": "pnpm --filter @arena/db reset",
+    "db:seed": "pnpm --filter @arena/db seed",
+    "db:studio": "pnpm --filter @arena/db studio",
+    "dev": "turbo run dev",
+    "dev:services": "turbo run dev --filter=@arena/gateway --filter=@arena/realtime --filter=@arena/matchmaker --filter=@arena/worker",
+    "dev:web": "turbo run dev --filter=@arena/web",
+    "docker:build": "docker compose -f docker-compose.yml -f docker-compose.prod.yml build",
+    "docker:down": "docker compose down",
+    "docker:logs": "docker compose logs -f",
+    "docker:reset": "docker compose down -v && docker compose up -d",
+    "docker:up": "docker compose up -d",
+    "docs:check": "node scripts/check-mermaid.mjs && vitest run --project docs",
+    "env:check": "tsx scripts/check-env.ts",
+    "format": "prettier --write \"**/*.{ts,tsx,js,jsx,mjs,cjs,json,md,mdx,yml,yaml,css}\"",
+    "format:check": "prettier --check \"**/*.{ts,tsx,js,jsx,mjs,cjs,json,md,mdx,yml,yaml,css}\"",
+    "lint": "turbo run lint",
+    "lint:fix": "turbo run lint -- --fix",
+    "openapi": "dotenv -e .env -- tsx scripts/emit-openapi.ts",
+    "prepare": "husky",
+    "smoke": "node scripts/smoke.mjs",
+    "start": "turbo run start",
+    "test": "turbo run test",
+    "test:all": "pnpm test && pnpm test:contract && pnpm test:e2e",
+    "test:contract": "cd programs && cargo test -p arena",
+    "test:e2e": "playwright test",
+    "test:e2e:ui": "playwright test --ui",
+    "test:load": "pnpm --filter @arena/game-core exec vitest run src/simulation.bench.test.ts --reporter=verbose",
+    "test:watch": "turbo run test:watch",
+    "typecheck": "turbo run typecheck",
+    "wallet": "node scripts/test-wallet.mjs",
+    "match-flow": "pnpm --filter @arena/worker exec dotenv -e ../../.env -- node scripts/match-flow.mjs",
+    "onchain-check": "pnpm --filter @arena/worker exec dotenv -e ../../.env -- node scripts/onchain-check.mjs",
+    "open-lobbies": "pnpm --filter @arena/worker exec dotenv -e ../../.env -- node scripts/open-lobbies.mjs",
+    "direct-entry-check": "pnpm --filter @arena/worker exec dotenv -e ../../.env -- node scripts/direct-entry-check.mjs"
+  },
+  "devDependencies": {
+    "@arena/env": "workspace:*",
+    "@arena/eslint-config": "workspace:*",
+    "@arena/prettier-config": "workspace:*",
+    "@arena/typescript-config": "workspace:*",
+    "@commitlint/cli": "^19.6.1",
+    "@commitlint/config-conventional": "^19.6.0",
+    "@electric-sql/pglite": "^0.5.4",
+    "@playwright/test": "^1.62.1",
+    "@solana/web3.js": "^1.98.4",
+    "@types/node": "^22.10.5",
+    "bs58": "^6.0.0",
+    "eslint": "^9.39.5",
+    "husky": "^9.1.7",
+    "jsdom": "^26",
+    "lint-staged": "^17.2.0",
+    "mermaid": "^11.16.0",
+    "prettier": "^3.9.6",
+    "prettier-plugin-tailwindcss": "^0.6.11",
+    "rimraf": "^6.0.1",
+    "tsx": "^4.23.1",
+    "turbo": "^2.10.7",
+    "tweetnacl": "^1.0.3",
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.10"
+  },
+  "prettier": "@arena/prettier-config",
+  "lint-staged": {
+    "*.{ts,tsx,js,jsx,mjs,cjs}": [
+      "eslint --fix --no-warn-ignored",
+      "prettier --write"
+    ],
+    "*.{json,md,mdx,yml,yaml,css}": [
+      "prettier --write"
+    ],
+    "*.rs": [
+      "rustfmt --edition 2021"
+    ]
+  },
+  "pnpm": {
+    "peerDependencyRules": {
+      "allowedVersions": {
+        "react": "19",
+        "react-dom": "19"
+      }
+    }
+  }
+}

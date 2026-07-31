@@ -1,0 +1,15 @@
+# Default owner for everything not matched below.
+*                       @your-org/platform
+
+/apps/realtime/         @your-org/gameplay
+/apps/matchmaker/       @your-org/platform
+/packages/protocol/     @your-org/gameplay @your-org/platform
+/packages/game-core/    @your-org/gameplay
+
+# Money and auth. Both require a second reviewer.
+/programs/              @your-org/onchain
+/apps/gateway/src/plugins/auth.ts  @your-org/security
+/packages/solana/       @your-org/onchain
+
+/infra/                 @your-org/infra
+/.github/               @your-org/infra

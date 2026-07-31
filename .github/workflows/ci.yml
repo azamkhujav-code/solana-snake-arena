@@ -1,0 +1,220 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  merge_group:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_VERSION: "22.22.1"
+  PNPM_VERSION: "9.12.3"
+  TURBO_TELEMETRY_DISABLED: "1"
+  NEXT_TELEMETRY_DISABLED: "1"
+
+jobs:
+  # Lint, typecheck and unit tests share one install, so they run as one job
+  # with Turbo handling the task graph rather than three jobs each paying the
+  # install cost.
+  verify:
+    name: Lint · Typecheck · Test
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: arena
+          POSTGRES_PASSWORD: arena
+          POSTGRES_DB: arena_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U arena"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Turbo needs history to compute which packages actually changed.
+          fetch-depth: 2
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Cache Turbo
+        uses: actions/cache@v4
+        with:
+          path: .turbo
+          key: turbo-${{ runner.os }}-${{ github.sha }}
+          restore-keys: turbo-${{ runner.os }}-
+
+      - name: Generate Prisma client
+        run: pnpm db:generate
+
+      - name: Format check
+        run: pnpm format:check
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      # Documentation rots silently: a renamed env var or a moved file breaks
+      # no build. These checks fail loudly instead.
+      - name: Docs
+        run: pnpm docs:check
+
+      - name: Test
+        run: pnpm test
+        env:
+          DATABASE_URL: postgresql://arena:arena@localhost:5432/arena_test
+          DIRECT_DATABASE_URL: postgresql://arena:arena@localhost:5432/arena_test
+          REDIS_URL: redis://localhost:6379
+          JWT_SECRET: ci-secret-value-that-is-at-least-32-characters-long
+          SOLANA_RPC_URL: https://api.devnet.solana.com
+          ARENA_PROGRAM_ID: Arena111111111111111111111111111111111111111
+          NEXT_PUBLIC_ARENA_PROGRAM_ID: Arena111111111111111111111111111111111111111
+
+  # Rust unit tests for the on-chain program. No validator needed — the
+  # arithmetic these cover is pure, and it is where a wrong answer silently pays
+  # the wrong amount rather than failing loudly.
+  contract:
+    name: Smart contract
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: programs
+      - name: Format
+        run: cargo fmt --check
+        working-directory: programs
+      - name: Clippy
+        run: cargo clippy -p arena --all-targets -- -D warnings
+        working-directory: programs
+      - name: Test
+        run: cargo test -p arena
+        working-directory: programs
+
+  # Real browser, real production build, no backend. Every page must render and
+  # degrade honestly when the API is unreachable — a state real users hit.
+  e2e:
+    name: E2E
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm db:generate
+      - name: Install Chromium
+        run: pnpm exec playwright install --with-deps chromium
+      - name: Build web
+        run: pnpm --filter @arena/web build
+        env:
+          NEXT_PUBLIC_APP_URL: http://localhost:3000
+          NEXT_PUBLIC_GATEWAY_URL: http://localhost:4000
+          NEXT_PUBLIC_MATCHMAKER_URL: http://localhost:4002
+          NEXT_PUBLIC_SOLANA_RPC_URL: https://api.devnet.solana.com
+          NEXT_PUBLIC_ARENA_PROGRAM_ID: Arena111111111111111111111111111111111111111
+      - name: Run E2E
+        run: pnpm test:e2e
+      - uses: actions/upload-artifact@v4
+        # Traces and screenshots are only worth keeping when something failed.
+        if: failure()
+        with:
+          name: playwright-report
+          path: playwright-report/
+          retention-days: 7
+
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm db:generate
+
+      - name: Build all packages
+        run: pnpm build
+        env:
+          DATABASE_URL: postgresql://arena:arena@localhost:5432/arena
+          NEXT_PUBLIC_APP_URL: http://localhost:3000
+          NEXT_PUBLIC_GATEWAY_URL: http://localhost:4000
+          NEXT_PUBLIC_MATCHMAKER_URL: http://localhost:4002
+          NEXT_PUBLIC_SOLANA_RPC_URL: https://api.devnet.solana.com
+          NEXT_PUBLIC_ARENA_PROGRAM_ID: Arena111111111111111111111111111111111111111
+
+  # Verifies the migration history applies cleanly from empty — a migration that
+  # only works against a dev database that already drifted is a deploy outage.
+  migrations:
+    name: Migrations
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: arena
+          POSTGRES_PASSWORD: arena
+          POSTGRES_DB: arena_migrate
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U arena"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Apply migrations
+        run: pnpm db:deploy
+        env:
+          DATABASE_URL: postgresql://arena:arena@localhost:5432/arena_migrate
+          DIRECT_DATABASE_URL: postgresql://arena:arena@localhost:5432/arena_migrate

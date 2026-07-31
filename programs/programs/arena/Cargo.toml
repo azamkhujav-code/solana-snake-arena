@@ -1,0 +1,28 @@
+[package]
+name = "arena"
+version = "0.1.0"
+description = "On-chain custody, room escrow and prize settlement for Slither Arena."
+edition = "2021"
+license = "MIT"
+
+[lib]
+crate-type = ["cdylib", "lib"]
+name = "arena"
+
+[features]
+default = []
+cpi = ["no-entrypoint"]
+no-entrypoint = []
+no-idl = []
+no-log-ix-name = []
+idl-build = ["anchor-lang/idl-build"]
+
+[dependencies]
+# `init-if-needed` lets a player's custody account be created on their first
+# deposit instead of forcing a separate transaction. Every use of it below is
+# on a PDA whose seeds bind it to one owner, which is what makes the
+# re-initialisation attack the feature warns about inapplicable.
+anchor-lang = { version = "0.32.1", features = ["init-if-needed"] }
+
+[lints.rust]
+unexpected_cfgs = { level = "allow", check-cfg = ['cfg(target_os, values("solana"))'] }

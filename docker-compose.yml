@@ -1,0 +1,198 @@
+# Local development stack.
+#
+# Starts the stateful dependencies plus one of each service. Application code is
+# normally run outside Docker via `pnpm dev` for fast reloads; use
+# `docker compose --profile apps up` to run the services in containers too.
+
+name: slither-arena
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: arena
+      POSTGRES_PASSWORD: arena
+      POSTGRES_DB: arena
+      # Faster local startup; unsafe settings are acceptable for a dev volume.
+      POSTGRES_INITDB_ARGS: "--data-checksums"
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U arena -d arena"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    command:
+      - postgres
+      - -c
+      - max_connections=200
+      - -c
+      - shared_buffers=256MB
+
+  # Transaction pooling. Prisma opens a pool per process; with many replicas
+  # that exhausts Postgres connections long before it exhausts CPU.
+  pgbouncer:
+    image: edoburu/pgbouncer:latest
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      DB_USER: arena
+      DB_PASSWORD: arena
+      DB_NAME: arena
+      POOL_MODE: transaction
+      MAX_CLIENT_CONN: "2000"
+      DEFAULT_POOL_SIZE: "40"
+      AUTH_TYPE: scram-sha-256
+    ports:
+      - "6432:5432"
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    command:
+      - redis-server
+      - --appendonly
+      - "yes"
+      # Presence and room keys are recoverable; evicting them beats an OOM.
+      - --maxmemory
+      - 512mb
+      - --maxmemory-policy
+      - allkeys-lru
+
+  # ---- Application services (opt-in) ----------------------------------------
+
+  gateway:
+    profiles: ["apps"]
+    build:
+      context: .
+      dockerfile: infra/docker/node-service.Dockerfile
+      args:
+        PACKAGE: "@arena/gateway"
+        APP_DIR: gateway
+    restart: unless-stopped
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+    env_file: [.env]
+    environment:
+      SERVICE_NAME: gateway
+      PORT: "4000"
+      DATABASE_URL: postgresql://arena:arena@pgbouncer:5432/arena?pgbouncer=true
+      DIRECT_DATABASE_URL: postgresql://arena:arena@postgres:5432/arena
+      REDIS_URL: redis://redis:6379
+    ports:
+      - "4000:4000"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://localhost:4000/health/live').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  matchmaker:
+    profiles: ["apps"]
+    build:
+      context: .
+      dockerfile: infra/docker/node-service.Dockerfile
+      args:
+        PACKAGE: "@arena/matchmaker"
+        APP_DIR: matchmaker
+    restart: unless-stopped
+    depends_on:
+      redis: { condition: service_healthy }
+    env_file: [.env]
+    environment:
+      SERVICE_NAME: matchmaker
+      PORT: "4002"
+      REDIS_URL: redis://redis:6379
+    ports:
+      - "4002:4002"
+
+  realtime:
+    profiles: ["apps"]
+    build:
+      context: .
+      dockerfile: infra/docker/node-service.Dockerfile
+      args:
+        PACKAGE: "@arena/realtime"
+        APP_DIR: realtime
+    restart: unless-stopped
+    depends_on:
+      redis: { condition: service_healthy }
+    env_file: [.env]
+    environment:
+      SERVICE_NAME: realtime
+      PORT: "4001"
+      NODE_ID: realtime-local-1
+      ADVERTISE_URL: http://localhost:4001
+      REDIS_URL: redis://redis:6379
+    ports:
+      - "4001:4001"
+    # SIGTERM starts the drain; give rooms time to empty before the kill.
+    stop_grace_period: 45s
+
+  web:
+    profiles: ["apps"]
+    build:
+      context: .
+      dockerfile: infra/docker/web.Dockerfile
+      args:
+        NEXT_PUBLIC_APP_URL: http://localhost:3000
+        NEXT_PUBLIC_GATEWAY_URL: http://localhost:4000
+        NEXT_PUBLIC_MATCHMAKER_URL: http://localhost:4002
+        NEXT_PUBLIC_SOLANA_CLUSTER: devnet
+        NEXT_PUBLIC_SOLANA_RPC_URL: https://api.devnet.solana.com
+        NEXT_PUBLIC_ARENA_PROGRAM_ID: Arena111111111111111111111111111111111111111
+    restart: unless-stopped
+    depends_on: [gateway, matchmaker]
+    ports:
+      - "3000:3000"
+
+  # ---- Observability (opt-in) -----------------------------------------------
+
+  prometheus:
+    profiles: ["observability"]
+    image: prom/prometheus:latest
+    restart: unless-stopped
+    volumes:
+      - ./infra/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "9090:9090"
+
+  grafana:
+    profiles: ["observability"]
+    image: grafana/grafana:latest
+    restart: unless-stopped
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+    ports:
+      - "3001:3000"
+    volumes:
+      - grafana-data:/var/lib/grafana
+
+volumes:
+  postgres-data:
+  redis-data:
+  grafana-data:

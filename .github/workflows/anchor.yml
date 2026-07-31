@@ -1,0 +1,80 @@
+name: Anchor
+
+# The Rust toolchain and Solana CLI are slow to install, so this only runs when
+# the on-chain program actually changes.
+on:
+  push:
+    branches: [main]
+    paths: ["programs/**", ".github/workflows/anchor.yml"]
+  pull_request:
+    paths: ["programs/**", ".github/workflows/anchor.yml"]
+  workflow_dispatch:
+
+concurrency:
+  group: anchor-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  SOLANA_VERSION: "1.18.26"
+  ANCHOR_VERSION: "0.32.1"
+
+jobs:
+  program:
+    name: Build & test program
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: programs
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            programs/target
+          key: cargo-${{ runner.os }}-${{ hashFiles('programs/**/Cargo.lock') }}
+          restore-keys: cargo-${{ runner.os }}-
+
+      - name: Install Solana CLI
+        run: |
+          sh -c "$(curl -sSfL https://release.anza.xyz/v${SOLANA_VERSION}/install)"
+          echo "$HOME/.local/share/solana/install/active_release/bin" >> "$GITHUB_PATH"
+
+      - name: Install Anchor
+        run: |
+          cargo install --git https://github.com/coral-xyz/anchor avm --locked --force
+          avm install "${ANCHOR_VERSION}"
+          avm use "${ANCHOR_VERSION}"
+
+      - name: Generate a throwaway keypair
+        run: solana-keygen new --no-bip39-passphrase -o ~/.config/solana/id.json
+
+      - name: Format
+        run: cargo fmt --check
+
+      - name: Clippy
+        run: cargo clippy -- -D warnings
+
+      - name: Build
+        run: anchor build
+
+      - name: Test
+        run: anchor test
+
+      - name: Upload IDL
+        uses: actions/upload-artifact@v4
+        with:
+          name: arena-idl
+          path: |
+            programs/target/idl/*.json
+            programs/target/types/*.ts
+          if-no-files-found: warn

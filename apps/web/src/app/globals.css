@@ -1,0 +1,34 @@
+@import 'tailwindcss';
+@import '@arena/ui/styles.css';
+
+/*
+ * Tailwind 4 scans the importing project by default. The shared UI package
+ * lives outside this app's root, so its class names have to be registered
+ * explicitly or they get tree-shaken out of the stylesheet.
+ */
+@source '../../../../packages/ui/src';
+
+@theme {
+  --color-background: oklch(0.16 0.02 260);
+  --color-foreground: oklch(0.96 0.01 260);
+}
+
+@layer base {
+  html,
+  body {
+    height: 100%;
+  }
+
+  body {
+    background-color: var(--color-background);
+    color: var(--color-foreground);
+    -webkit-font-smoothing: antialiased;
+    /* The game canvas owns scrolling; a bouncing page breaks pointer aim. */
+    overscroll-behavior: none;
+  }
+
+  canvas {
+    display: block;
+    touch-action: none;
+  }
+}
