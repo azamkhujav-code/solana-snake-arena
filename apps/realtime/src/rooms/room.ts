@@ -538,12 +538,12 @@ export class Room {
    * winner emerges, and settlement is not idempotent on repeat reports.
    */
   hasResult(): boolean {
+    // Status first: `aliveCount` reads the world, which only exists once the
+    // room has started, and a closed room has already dropped its seats.
+    if (this.status !== 'active' && this.status !== 'draining') return false;
+
     return (
-      !this.reported &&
-      this.gameId !== null &&
-      this.entrants.size >= 2 &&
-      this.aliveCount() <= 1 &&
-      (this.status === 'active' || this.status === 'draining')
+      !this.reported && this.gameId !== null && this.entrants.size >= 2 && this.aliveCount() <= 1
     );
   }
 

@@ -59,14 +59,26 @@ export class NodeRegistry {
     const intervalMs = Math.max(1_000, (config.NODE_HEARTBEAT_TTL_SECONDS * 1_000) / 3);
 
     this.timer = setInterval(() => {
-      void this.redis
-        .set(
+      void Promise.all([
+        // Re-asserted every beat, not just at startup.
+        //
+        // A rolling deploy runs two instances under one node id: the incoming
+        // one registers, then the outgoing one gets SIGTERM and deregisters —
+        // and its `srem` removes the id the new instance had just added. The
+        // detail key below kept being refreshed, but `loadNodes` starts from
+        // this set, so the node was invisible and every placement failed with
+        // "no realtime capacity" until something restarted it.
+        //
+        // `sadd` is idempotent, so re-adding an id that is already there costs
+        // nothing and heals the window automatically.
+        this.redis.sadd('cluster:nodes', config.NODE_ID),
+        this.redis.set(
           `cluster:node:${config.NODE_ID}`,
           this.payload(),
           'EX',
           config.NODE_HEARTBEAT_TTL_SECONDS,
-        )
-        .catch((error: unknown) => this.log.error({ err: error }, 'heartbeat failed'));
+        ),
+      ]).catch((error: unknown) => this.log.error({ err: error }, 'heartbeat failed'));
     }, intervalMs);
 
     this.timer.unref();
