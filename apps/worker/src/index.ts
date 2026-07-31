@@ -123,7 +123,12 @@ async function main(): Promise<void> {
   const ensureRooms = createRoomEnsurer({ solana, lobbies, log });
   const roomTimer = setInterval(() => {
     void ensureRooms().catch((err: unknown) => log.error({ err }, 'room ensurer failed'));
-  }, 15_000);
+    // Five seconds, not fifteen: the countdown starts the moment a room fills
+    // and the entry fee is due immediately after, so this interval is the delay
+    // a player spends staring at a lobby that wants money it has nowhere to put.
+    // Idle cost is one Redis read per paid tier — the chain is only touched for
+    // a tier somebody is actually waiting in.
+  }, 5_000);
   roomTimer.unref();
 
   if (config.WORKER_SCHEDULER_ENABLED) {

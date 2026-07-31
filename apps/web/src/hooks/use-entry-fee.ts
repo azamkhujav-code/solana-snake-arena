@@ -4,10 +4,17 @@ import { useConnection, useWallet } from '@solana/wallet-adapter-react';
 import { ComputeBudgetProgram, TransactionMessage, VersionedTransaction } from '@solana/web3.js';
 import { useCallback, useEffect, useRef, useState } from 'react';
 
-import { buildEnterRoomInstruction, roomExistsOnChain } from '@/lib/arena-program';
+import { buildEnterRoomInstruction, waitForRoomOnChain } from '@/lib/arena-program';
 import type { LobbySummary } from '@/lib/lobby-state';
 
-export type EntryFeeStatus = 'idle' | 'awaiting-signature' | 'sending' | 'paid' | 'failed';
+export type EntryFeeStatus =
+  | 'idle'
+  /** Waiting for the backend to open the room this fee is paid into. */
+  | 'preparing'
+  | 'awaiting-signature'
+  | 'sending'
+  | 'paid'
+  | 'failed';
 
 /**
  * Pays the entry fee when the room is about to start.
@@ -59,12 +66,20 @@ export function useEntryFee(
       try {
         setError(null);
 
-        // Asked before the wallet is, because an unopened room makes
-        // `enter_room` unsimulatable and the player sees only their wallet
+        // Waited for before the wallet is asked, because an unopened room makes
+        // `enter_room` unsimulatable and the player would see only their wallet
         // refusing the transfer as unsafe.
-        if (!(await roomExistsOnChain(connection, game))) {
+        //
+        // Waiting rather than failing: the countdown begins the instant the room
+        // fills and the backend opens the room a few seconds behind it, so the
+        // first attempt routinely lands in a gap that closes on its own. Telling
+        // the player they would "sit this match out" over those few seconds was
+        // simply wrong — the countdown had forty more.
+        setStatus('preparing');
+
+        if (!(await waitForRoomOnChain(connection, game))) {
           setStatus('failed');
-          setError('This room is not open on chain yet. Try again in a moment.');
+          setError('This room did not open in time. Nothing was charged.');
           paidFor.current = null;
           return;
         }

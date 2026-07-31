@@ -21,6 +21,32 @@ export async function roomExistsOnChain(connection: Connection, gameId: string):
 }
 
 /**
+ * Waits for the room to be opened, rather than giving up the instant it is not.
+ *
+ * The countdown starts the moment the room reaches its minimum, and the backend
+ * opens the room on its own loop a few seconds later — so there is a window
+ * where the fee is due and there is nowhere to pay it. Failing immediately in
+ * that window told the player they would "sit this match out" over a gap that
+ * closes on its own, seconds later, well inside the countdown.
+ *
+ * Bounded rather than open-ended: if the room genuinely never opens, the player
+ * needs to be told, and a spinner that never resolves is a worse way to say it.
+ */
+export async function waitForRoomOnChain(
+  connection: Connection,
+  gameId: string,
+  timeoutMs = 30_000,
+): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+
+  for (;;) {
+    if (await roomExistsOnChain(connection, gameId)) return true;
+    if (Date.now() >= deadline) return false;
+    await new Promise((resolve) => setTimeout(resolve, 2_000));
+  }
+}
+
+/**
  * Builds the transaction that pays a room's entry fee.
  *
  * Built in the browser because only the player can sign it — the backend never

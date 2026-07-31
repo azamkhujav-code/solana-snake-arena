@@ -72,9 +72,14 @@ function EntryFeeBanner({ lobby }: { lobby: LobbySummary | null }) {
 
   return (
     <p className="rounded-lg border border-amber-900/60 bg-amber-950/40 px-3 py-2 text-xs text-amber-300">
-      {status === 'awaiting-signature'
-        ? `Approve ${formatSolShort(BigInt(lobby.entryFeeLamports))} ◎ in your wallet to enter this match.`
-        : 'Paying the entry fee…'}
+      {status === 'preparing'
+        ? // Named for what is happening rather than left silent: the wallet is
+          // about to open by itself, and a player who was not told why has a
+          // moment to decide the game is stuck.
+          'Preparing the match wallet…'
+        : status === 'awaiting-signature'
+          ? `Approve ${formatSolShort(BigInt(lobby.entryFeeLamports))} ◎ in your wallet to enter this match.`
+          : 'Paying the entry fee…'}
     </p>
   );
 }
