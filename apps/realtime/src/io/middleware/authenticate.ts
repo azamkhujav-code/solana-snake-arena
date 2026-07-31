@@ -7,22 +7,15 @@ import type { ArenaServer } from '../socket-server.js';
 import { clientAddress, ConnectionGuard } from './connection-guard.js';
 
 /**
- * Where a player is allowed back into, and for how long.
+ * How long a player may re-enter the room they were placed in.
  *
- * Deliberately keyed by player rather than by ticket: the ticket is gone by the
- * time this matters, and the question being answered is "is this the person
- * whose seat is still warm", not "is this credential fresh".
+ * Minutes rather than seconds, and deliberately longer than the room's own
+ * eviction grace. A tighter window looks correct and is not: the seat may be
+ * gone, but a reconnecting player whose seat has expired should be readmitted
+ * and given a fresh snake, not turned away at the door with a message about
+ * their ticket. Matched to the matchmaker's write so the two agree.
  */
-const reconnectKey = (playerId: string): string => `reconnect:${playerId}`;
-
-/**
- * Slack on top of the room's grace window.
- *
- * The room evicts the seat on a tick, not on a timer, and a reconnecting client
- * spends a moment on DNS and the handshake. Expiring this first would refuse a
- * player the room was still holding a place for.
- */
-const RECONNECT_MARGIN_SECONDS = 10;
+const RECONNECT_WINDOW_SECONDS = 5 * 60;
 
 export interface TicketClaims {
   playerId: string;
@@ -136,7 +129,7 @@ export function registerAuthMiddleware(io: ArenaServer, redis: RedisClient): voi
            * single-use rule closes: a stolen ticket still cannot open a session
            * anywhere, and a second player still cannot enter on somebody else's.
            */
-          const note = await redis.get(reconnectKey(claims.playerId));
+          const note = await redis.get(redisKeys.reconnectRoom(claims.playerId));
 
           if (note !== claims.roomId) {
             next(new Error('INVALID_TICKET: ticket already used or expired'));
@@ -144,14 +137,15 @@ export function registerAuthMiddleware(io: ArenaServer, redis: RedisClient): voi
           }
         }
 
-        // Refreshed on every handshake, so it tracks the seat rather than the
-        // original join — a player who reconnects twice gets the same window
-        // the first reconnect had.
+        // Refreshed on every handshake so the window tracks the seat rather
+        // than the ticket that opened it. The matchmaker writes it first, at
+        // mint time — writing it only here left a race that a client opening
+        // two sockets at once lost.
         await redis.set(
-          reconnectKey(claims.playerId),
+          redisKeys.reconnectRoom(claims.playerId),
           claims.roomId,
           'EX',
-          config.RECONNECT_GRACE_SECONDS + RECONNECT_MARGIN_SECONDS,
+          RECONNECT_WINDOW_SECONDS,
         );
 
         socket.data.playerId = claims.playerId;

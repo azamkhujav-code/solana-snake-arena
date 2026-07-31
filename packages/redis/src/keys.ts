@@ -56,6 +56,22 @@ export const redisKeys = {
    * the old: a player cannot bank tickets and open several sockets at once.
    */
   matchTicket: (playerId: string) => `ticket:${playerId}`,
+  /**
+   * The room a player is expected in, and may re-enter without a fresh ticket.
+   *
+   * Written when the ticket is minted rather than when it is consumed, which
+   * matters more than it sounds: the socket reconnects on its own and a client
+   * can open two connections at once, so writing it on the handshake left a
+   * race where the second connection read this before the first had written it
+   * and was refused with "ticket already used or expired" — mid-match, for no
+   * reason the player could see.
+   *
+   * It does not weaken single use in any way that matters. The ticket must
+   * still verify by HMAC and name the right node, so a forgery opens nothing;
+   * this is keyed by player and holds one room, so it readmits exactly one
+   * person to the one seat they already occupy.
+   */
+  reconnectRoom: (playerId: string) => `reconnect:${playerId}`,
 
   /* ---- Leaderboards ---------------------------------------------------- */
 

@@ -30,6 +30,40 @@ interface OpenMatch {
 const openMatchKey = (tierId: string): string => `match:open:${tierId}`;
 
 /**
+ * How long a player may re-enter the room this ticket named.
+ *
+ * Comfortably longer than the ticket itself, because the reconnect that needs
+ * it happens *after* the first handshake has spent the ticket — and shorter
+ * than a match, because it is a way back to a seat rather than a standing
+ * invitation.
+ */
+const RECONNECT_WINDOW_MS = 5 * 60_000;
+
+/**
+ * Records where this player is allowed back in.
+ *
+ * Written when the ticket is minted, not when it is used. The realtime node
+ * consumes a ticket with GETDEL, so the socket's own automatic reconnect
+ * presents a spent one — and writing this on the handshake instead left a race
+ * that a client opening two connections at once lost, taking "ticket already
+ * used or expired" mid-match for no reason it could see.
+ *
+ * Best effort: a failure here costs a reconnect, not the match, and refusing to
+ * hand out a ticket over it would be the worse trade.
+ */
+async function noteReconnectRoom(
+  app: FastifyInstance,
+  playerId: string,
+  roomId: string,
+): Promise<void> {
+  await app.redis
+    .set(redisKeys.reconnectRoom(playerId), roomId, 'PX', RECONNECT_WINDOW_MS)
+    .catch((error: unknown) => {
+      app.log.warn({ err: error, playerId }, 'could not record the reconnect room');
+    });
+}
+
+/**
  * How long one direct-entry world keeps taking arrivals.
  *
  * Long enough that players opening the same room a minute apart still meet;
@@ -129,6 +163,7 @@ export async function matchmakingRoutes(app: FastifyInstance): Promise<void> {
           // Move it to the key the realtime node consumes, so the handshake
           // finds it exactly once.
           await app.redis.set(redisKeys.matchTicket(playerId), issued, 'PX', TICKET_TTL_MS);
+          await noteReconnectRoom(app, playerId, meta.roomId);
 
           // Consumed, so stop advertising it. These keys are what `pendingMatch`
           // reports, and leaving them behind for the rest of their minute meant
@@ -227,6 +262,7 @@ export async function matchmakingRoutes(app: FastifyInstance): Promise<void> {
       // GETDELs on handshake. A second /matchmake overwrites the first, so a
       // player cannot bank tickets and open several sockets at once.
       await app.redis.set(redisKeys.matchTicket(playerId), ticket, 'PX', TICKET_TTL_MS);
+      await noteReconnectRoom(app, playerId, open.roomId);
 
       return {
         roomId: open.roomId,
