@@ -281,9 +281,24 @@ function settle(state: LobbyState, tier: RoomTier, now: number, mutated: boolean
       if (tier.entryFeeLamports > 0n) {
         const paid = state.players.filter((player) => player.ready);
 
+        /**
+         * Anyone who did not pay leaves the queue, whichever way this goes.
+         *
+         * Keeping them was an infinite loop: the countdown expired with nobody
+         * paid, the lobby went back to waiting, still had its two players, so
+         * it immediately counted down again — for ever, on the same game id,
+         * which the client treats as one payment it has already attempted. The
+         * room could neither start nor free itself, and anyone who *had* paid
+         * was trapped behind someone who never would.
+         *
+         * They are not charged and not penalised; they simply have to ask
+         * again, which is the same thing they would do if they had never
+         * joined. Forty-five seconds is a long time to hold a seat in a room
+         * that is waiting on you.
+         */
         if (paid.length < tier.minPlayers) {
           return {
-            state: { ...state, status: 'waiting', countdownEndsAt: null },
+            state: { ...state, players: paid, status: 'waiting', countdownEndsAt: null },
             changed: true,
             rejected: null,
             shouldLaunch: false,

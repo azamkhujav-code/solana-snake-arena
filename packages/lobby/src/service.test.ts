@@ -235,9 +235,12 @@ describe('paid rooms wait for the money', () => {
     expect(launch).not.toHaveBeenCalled();
   });
 
-  it('returns to waiting so the room can fill again', async () => {
-    // Nobody was charged, so there is nothing to refund — the countdown simply
-    // starts over when the room next reaches its minimum.
+  it('clears out the players who did not pay', async () => {
+    // Keeping them was an infinite loop: the countdown expired unpaid, the
+    // lobby went back to waiting, still had its two players, and immediately
+    // counted down again — for ever, on the same game id, which the client
+    // treats as a payment it has already attempted. Nobody was charged, so
+    // there is nothing to refund; they simply have to ask again.
     const { service } = makeService();
     await fill(service, tier.minPlayers);
 
@@ -246,7 +249,22 @@ describe('paid rooms wait for the money', () => {
 
     const lobby = await service.get(TIER);
     expect(lobby?.status).toBe('waiting');
-    expect(lobby?.playerCount).toBe(tier.minPlayers);
+    expect(lobby?.playerCount).toBe(0);
+  });
+
+  it('keeps the players who did pay', async () => {
+    // A payer must not be evicted for somebody else's inaction — their fee is
+    // already in the vault, and they stay queued for the next countdown.
+    const { service } = makeService();
+    await fill(service, tier.minPlayers);
+    await service.setReady(TIER, 'p0', true);
+
+    clock += tier.countdownSeconds * 1_000;
+    await service.tick(TIER);
+
+    const lobby = await service.get(TIER);
+    expect(lobby?.playerCount).toBe(1);
+    expect(await service.whereIs('p0')).toBe(TIER);
   });
 
   it('does not launch when only some have paid', async () => {

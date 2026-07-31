@@ -137,6 +137,23 @@ export function useEntryFee(
     [publicKey, sendTransaction, connection, onPaid],
   );
 
+  /**
+   * Each countdown is a fresh chance to pay.
+   *
+   * The guard is keyed by game, so one attempt per game was one attempt ever —
+   * and a room whose countdown expires unpaid starts another on the same game
+   * id. A player who missed the wallet prompt, or whose first attempt failed
+   * quietly, was never asked again, and sat in a room counting down at them for
+   * ever. Clearing the guard when a new countdown begins asks once per
+   * countdown instead, which is the thing actually being offered.
+   */
+  const wasCounting = useRef(false);
+
+  useEffect(() => {
+    if (counting && !wasCounting.current) paidFor.current = null;
+    wasCounting.current = counting;
+  }, [counting]);
+
   useEffect(() => {
     if (!counting || !gameId || entryFee === 0n) return;
     if (paidFor.current === gameId) return;
