@@ -263,6 +263,41 @@ function settle(state: LobbyState, tier: RoomTier, now: number, mutated: boolean
 
   if (state.status === 'countdown' && state.countdownEndsAt !== null) {
     if (now >= state.countdownEndsAt) {
+      /**
+       * A staked match starts only with players who have paid.
+       *
+       * `ready` is set when the entry fee confirms on chain, so in a paid room
+       * it means "their money is in the vault" and nothing else. Launching
+       * without it started matches whose pot was missing an entrant's stake:
+       * they played for a prize they had not contributed to, and the player who
+       * did pay was funding both of them.
+       *
+       * Anyone who has not paid by the deadline is left in the lobby rather
+       * than taken into the match. If that drops the room below its minimum
+       * there is no match to start, so it goes back to waiting and the
+       * countdown begins again when it refills — nobody has been charged, so
+       * there is nothing to give back.
+       */
+      if (tier.entryFeeLamports > 0n) {
+        const paid = state.players.filter((player) => player.ready);
+
+        if (paid.length < tier.minPlayers) {
+          return {
+            state: { ...state, status: 'waiting', countdownEndsAt: null },
+            changed: true,
+            rejected: null,
+            shouldLaunch: false,
+          };
+        }
+
+        return {
+          state: { ...state, players: paid, status: 'launching', countdownEndsAt: null },
+          changed: true,
+          rejected: null,
+          shouldLaunch: true,
+        };
+      }
+
       return {
         state: { ...state, status: 'launching', countdownEndsAt: null },
         changed: true,

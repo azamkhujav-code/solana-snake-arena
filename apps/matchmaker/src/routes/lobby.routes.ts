@@ -12,7 +12,7 @@ import { z } from 'zod';
 
 import { getTier } from '@arena/lobby';
 
-import { canAfford, releaseStake, StakeError } from '../services/stake-client.js';
+import { canAfford, hasPaid, releaseStake, StakeError } from '../services/stake-client.js';
 
 /**
  * Lobby API.
@@ -230,8 +230,14 @@ export async function lobbyRoutes(app: FastifyInstance): Promise<void> {
       schema: {
         tags: ['lobbies'],
         summary: 'Set the caller’s ready flag',
-        description:
-          'When every queued player is ready the countdown shortens. Ready is a hint that pulls the start forward, not a gate — an idle player never blocks a match from starting.',
+        description: [
+          'When every queued player is ready the countdown shortens.',
+          '',
+          'In a **free** room ready is a hint that pulls the start forward, and',
+          'an idle player never blocks a match. In a **paid** room it is the',
+          'record that the entry fee has landed, and a match starts only with',
+          'players who carry it — so it cannot be set unless the chain agrees.',
+        ].join('\n'),
         security: [{ bearerAuth: [] }],
         body: lobbyReadyRequestSchema,
         response: { 200: lobbyActionResponseSchema },
@@ -239,6 +245,38 @@ export async function lobbyRoutes(app: FastifyInstance): Promise<void> {
       config: { rateLimit: { max: 60, timeWindow: 60_000 } },
     },
     async (request) => {
+      const tier = getTier(request.body.tierId);
+
+      /**
+       * In a paid room, ready means paid — verified, not asserted.
+       *
+       * The launch takes only ready players, so accepting the flag on the
+       * client's word would let anyone press "Mark ready" and be dealt into a
+       * staked match without contributing to the pot. The chain is asked
+       * instead: `enter_room` opens the player's account and moves the fee in
+       * one instruction, so that account existing is the payment.
+       */
+      if (request.body.ready && tier && tier.entryFeeLamports > 0n) {
+        const lobby = await app.lobbies.get(request.body.tierId);
+        const token = (request.headers.authorization ?? '').replace(/^Bearer /, '');
+
+        if (!lobby?.gameId) {
+          throw app.httpErrors.conflict('This room has no match prepared yet');
+        }
+
+        const paid = await hasPaid(lobby.gameId, token).catch((error: unknown) => {
+          request.log.warn(
+            { err: error, tierId: request.body.tierId },
+            'could not confirm payment',
+          );
+          return false;
+        });
+
+        if (!paid) {
+          throw app.httpErrors.conflict('Your entry fee has not reached the match wallet yet');
+        }
+      }
+
       const result = await app.lobbies.setReady(
         request.body.tierId,
         request.user.sub,

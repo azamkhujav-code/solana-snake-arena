@@ -100,6 +100,29 @@ const createPool: StageHandler = async (data, ctx) => {
     return { patch: {} };
   }
 
+  /**
+   * Only for a room somebody is actually waiting in.
+   *
+   * `create_room` allocates two accounts and the settlement authority funds
+   * their rent — about 0.0027 SOL a time. Doing that for all six paid tiers
+   * every ten minutes costs roughly 0.1 SOL an hour to keep empty rooms open on
+   * chain, and it drained the authority until `create_room` began failing for
+   * rent. The failure is caught and logged, so the cycle carried on and the
+   * lobby advertised a game whose room did not exist — and the browser was then
+   * handed an `enter_room` the wallet could not even simulate.
+   *
+   * Players carry across cycles, so a queued tier still gets its room on the
+   * next pass; what stops being paid for is the rooms nobody asked for.
+   */
+  const queued = await ctx.lobbies.get(data.tierId);
+  if (!queued || queued.playerCount === 0) {
+    ctx.log.info(
+      { tierId: data.tierId, gameId: data.gameId },
+      'no players queued; skipping on-chain room creation',
+    );
+    return { patch: {} };
+  }
+
   const onChainRoomId = roomIdFromUuid(data.gameId);
 
   // Each match gets its own vault address, derived from its own id. This is

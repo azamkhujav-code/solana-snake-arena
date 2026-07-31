@@ -4,7 +4,7 @@ import { useConnection, useWallet } from '@solana/wallet-adapter-react';
 import { ComputeBudgetProgram, TransactionMessage, VersionedTransaction } from '@solana/web3.js';
 import { useCallback, useEffect, useRef, useState } from 'react';
 
-import { buildEnterRoomInstruction } from '@/lib/arena-program';
+import { buildEnterRoomInstruction, roomExistsOnChain } from '@/lib/arena-program';
 import type { LobbySummary } from '@/lib/lobby-state';
 
 export type EntryFeeStatus = 'idle' | 'awaiting-signature' | 'sending' | 'paid' | 'failed';
@@ -57,8 +57,19 @@ export function useEntryFee(
       }
 
       try {
-        setStatus('awaiting-signature');
         setError(null);
+
+        // Asked before the wallet is, because an unopened room makes
+        // `enter_room` unsimulatable and the player sees only their wallet
+        // refusing the transfer as unsafe.
+        if (!(await roomExistsOnChain(connection, game))) {
+          setStatus('failed');
+          setError('This room is not open on chain yet. Try again in a moment.');
+          paidFor.current = null;
+          return;
+        }
+
+        setStatus('awaiting-signature');
 
         const instruction = buildEnterRoomInstruction(publicKey, game);
 

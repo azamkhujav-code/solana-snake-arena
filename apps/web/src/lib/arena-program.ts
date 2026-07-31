@@ -1,7 +1,24 @@
-import { createEnterRoomInstruction, roomIdFromUuid } from '@arena/solana';
-import { PublicKey, type TransactionInstruction } from '@solana/web3.js';
+import { createEnterRoomInstruction, findRoomPda, roomIdFromUuid } from '@arena/solana';
+import { PublicKey, type Connection, type TransactionInstruction } from '@solana/web3.js';
 
 import { env } from './env';
+
+/**
+ * Whether this match's room has actually been opened on chain.
+ *
+ * `enter_room` writes to the room account, so if the backend never created it
+ * the transaction cannot even be simulated — and what the player sees is their
+ * wallet refusing a transfer with "Failed to simulate the results of this
+ * request", which reads as the game trying to do something dangerous rather
+ * than as a room that is not ready.
+ *
+ * Checked before the wallet is asked for anything, so an unopened room is a
+ * message instead of a scary dialog.
+ */
+export async function roomExistsOnChain(connection: Connection, gameId: string): Promise<boolean> {
+  const [room] = findRoomPda(new PublicKey(env.arenaProgramId), roomIdFromUuid(gameId));
+  return (await connection.getAccountInfo(room)) !== null;
+}
 
 /**
  * Builds the transaction that pays a room's entry fee.

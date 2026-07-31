@@ -1,9 +1,11 @@
 import { lamportsSchema, requireTier } from '@arena/protocol';
+import { findRoomPda, findRoomPlayerPda, roomIdFromUuid } from '@arena/solana';
 import { PublicKey } from '@solana/web3.js';
 import type { FastifyInstance } from 'fastify';
 import type { ZodTypeProvider } from 'fastify-type-provider-zod';
 import { z } from 'zod';
 
+import { config } from '../config.js';
 import { conflict, notFound } from '../lib/errors.js';
 
 /**
@@ -104,6 +106,45 @@ export async function fundsRoutes(app: FastifyInstance): Promise<void> {
         walletLamports: lamports.toString(),
         sufficient: lamports >= needed,
       };
+    },
+  );
+
+  /**
+   * Has this player's entry fee actually landed?
+   *
+   * `enter_room` opens a `RoomPlayer` account for the payer and moves the fee
+   * in the same instruction, so the account existing *is* the payment — there
+   * is no state where the seat is recorded and the money is not.
+   *
+   * Read from the chain rather than trusting the client. A staked match must
+   * not start until every entrant has paid, and the client's own claim to have
+   * paid is exactly the thing an unpaid player would send.
+   */
+  api.post(
+    '/wallet/has-paid',
+    {
+      onRequest: [app.authenticate],
+      schema: {
+        tags: ['wallet'],
+        summary: 'Whether the caller has paid into a match vault',
+        security: [{ bearerAuth: [] }],
+        body: z.object({ gameId: z.uuid() }),
+        response: { 200: z.object({ gameId: z.string(), paid: z.boolean() }) },
+      },
+      config: { rateLimit: { max: 120, timeWindow: 60_000 } },
+    },
+    async (request) => {
+      const address = request.user.wallet;
+      if (!address) throw conflict('No wallet is connected to this session');
+
+      const [roomPlayer] = findRoomPlayerPda(
+        new PublicKey(config.ARENA_PROGRAM_ID),
+        findRoomPda(new PublicKey(config.ARENA_PROGRAM_ID), roomIdFromUuid(request.body.gameId))[0],
+        new PublicKey(address),
+      );
+
+      const info = await app.solana.connection.getAccountInfo(roomPlayer, 'confirmed');
+      return { gameId: request.body.gameId, paid: info !== null };
     },
   );
 }

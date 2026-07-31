@@ -100,29 +100,42 @@ export function EnterArena() {
           : 'Pick a name, connect a wallet, and join a room. Entry fees are paid per match — there is no balance to top up.'}
       </p>
 
-      <label className="mt-5 block">
-        <span className="text-xs font-medium uppercase tracking-widest text-slate-400">
-          Your nickname
-        </span>
-        <input
-          value={nickname}
-          onChange={(event) => setNickname(event.target.value.slice(0, MAX_NICKNAME))}
-          onKeyDown={(event) => {
-            // Enter is the obvious way to submit a single-field form, and the
-            // next action depends on how far along they are.
-            if (event.key !== 'Enter' || !nameReady) return;
-            if (!connected) openWalletModal();
-            else void connect(trimmed);
-          }}
-          placeholder="Snake"
-          maxLength={MAX_NICKNAME}
-          autoFocus
-          className="mt-1.5 w-full rounded-lg border border-slate-800 bg-slate-950 px-3 py-2 text-slate-100 outline-none focus:border-emerald-500"
-        />
-        <span className="mt-1 block text-right text-[11px] text-slate-600">
-          {trimmed.length}/{MAX_NICKNAME}
-        </span>
-      </label>
+      {/*
+        Not asked again once the session is back.
+
+        A reload restores the session from the refresh cookie but not the wallet
+        connection — that belongs to the extension — so this panel returns to ask
+        for the wallet, and it used to bring the nickname box back with it.
+        Being asked to type your name again is indistinguishable from having been
+        signed out, which is exactly what did not happen: the server still knows
+        who they are, and the name it holds is the one it would keep. Only the
+        wallet is missing, so only the wallet is asked for.
+      */}
+      {authenticated ? null : (
+        <label className="mt-5 block">
+          <span className="text-xs font-medium uppercase tracking-widest text-slate-400">
+            Your nickname
+          </span>
+          <input
+            value={nickname}
+            onChange={(event) => setNickname(event.target.value.slice(0, MAX_NICKNAME))}
+            onKeyDown={(event) => {
+              // Enter is the obvious way to submit a single-field form, and the
+              // next action depends on how far along they are.
+              if (event.key !== 'Enter' || !nameReady) return;
+              if (!connected) openWalletModal();
+              else void connect(trimmed);
+            }}
+            placeholder="Snake"
+            maxLength={MAX_NICKNAME}
+            autoFocus
+            className="mt-1.5 w-full rounded-lg border border-slate-800 bg-slate-950 px-3 py-2 text-slate-100 outline-none focus:border-emerald-500"
+          />
+          <span className="mt-1 block text-right text-[11px] text-slate-600">
+            {trimmed.length}/{MAX_NICKNAME}
+          </span>
+        </label>
+      )}
 
       <div className="mt-2">
         {!hasWallet ? (
@@ -135,13 +148,20 @@ export function EnterArena() {
             Install Phantom
           </a>
         ) : !connected ? (
-          <Button className="w-full" disabled={!nameReady} onClick={openWalletModal}>
-            {nameReady ? 'Connect wallet' : 'Enter a nickname first'}
+          // The name only gates this before there is a session. Afterwards the
+          // field is hidden, so gating on it would leave a button that cannot
+          // be pressed and no visible way to satisfy it.
+          <Button
+            className="w-full"
+            disabled={!authenticated && !nameReady}
+            onClick={openWalletModal}
+          >
+            {authenticated || nameReady ? 'Connect wallet' : 'Enter a nickname first'}
           </Button>
         ) : (
           <Button
             className="w-full"
-            disabled={!nameReady || connecting}
+            disabled={(!authenticated && !nameReady) || connecting}
             loading={connecting}
             onClick={() => void connect(trimmed)}
           >

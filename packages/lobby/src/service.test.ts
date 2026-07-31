@@ -4,7 +4,7 @@ import { LobbyService } from './service.js';
 import { InMemoryLobbyStore } from './store.js';
 import { requireTier } from './tiers.js';
 
-const TIER = 'bronze'; // min 4, max 60, 30s countdown, 8s ready countdown
+const TIER = 'bronze'; // paid: two players, 45s countdown, 5s once everyone has paid
 const tier = requireTier(TIER);
 
 let clock = 1_000_000;
@@ -21,6 +21,20 @@ const player = (id: string) => ({ playerId: id, nickname: id, wallet: `w-${id}` 
 async function fill(service: LobbyService, count: number, from = 0) {
   for (let i = from; i < from + count; i += 1) {
     await service.join(TIER, player(`p${i}`));
+  }
+}
+
+/**
+ * Joins players and marks each one paid.
+ *
+ * `ready` is what a confirmed entry fee sets, and a staked room launches only
+ * with players carrying it — so a test about launching has to pay, or it is
+ * really testing the case where nobody did.
+ */
+async function fillAndPay(service: LobbyService, count: number, from = 0) {
+  await fill(service, count, from);
+  for (let i = from; i < from + count; i += 1) {
+    await service.setReady(TIER, `p${i}`, true);
   }
 }
 
@@ -130,7 +144,7 @@ describe('auto start', () => {
 
   it('launches when the countdown expires', async () => {
     const { service, launch } = makeService();
-    await fill(service, tier.minPlayers);
+    await fillAndPay(service, tier.minPlayers);
 
     clock += tier.countdownSeconds * 1_000;
     const result = await service.tick(TIER);
@@ -142,7 +156,7 @@ describe('auto start', () => {
 
   it('reopens the lobby after launching, so the next batch can queue', async () => {
     const { service } = makeService();
-    await fill(service, tier.minPlayers);
+    await fillAndPay(service, tier.minPlayers);
 
     clock += tier.countdownSeconds * 1_000;
     await service.tick(TIER);
@@ -156,7 +170,7 @@ describe('auto start', () => {
 
   it('ticks every tier and reports which launched', async () => {
     const { service } = makeService();
-    await fill(service, tier.minPlayers);
+    await fillAndPay(service, tier.minPlayers);
 
     clock += tier.countdownSeconds * 1_000;
     const result = await service.tickAll();
@@ -202,6 +216,76 @@ describe('ready state', () => {
   });
 });
 
+/**
+ * A staked match starts only with players whose money is in the vault.
+ *
+ * `ready` is set from a confirmed entry fee, so in a paid room it means "paid".
+ * Starting without it dealt an unpaid player into a pot they had not
+ * contributed to — funded entirely by whoever did pay.
+ */
+describe('paid rooms wait for the money', () => {
+  it('does not launch when nobody has paid', async () => {
+    const { service, launch } = makeService();
+    await fill(service, tier.minPlayers);
+
+    clock += tier.countdownSeconds * 1_000;
+    const result = await service.tick(TIER);
+
+    expect(result.launched).toBe(false);
+    expect(launch).not.toHaveBeenCalled();
+  });
+
+  it('returns to waiting so the room can fill again', async () => {
+    // Nobody was charged, so there is nothing to refund — the countdown simply
+    // starts over when the room next reaches its minimum.
+    const { service } = makeService();
+    await fill(service, tier.minPlayers);
+
+    clock += tier.countdownSeconds * 1_000;
+    await service.tick(TIER);
+
+    const lobby = await service.get(TIER);
+    expect(lobby?.status).toBe('waiting');
+    expect(lobby?.playerCount).toBe(tier.minPlayers);
+  });
+
+  it('does not launch when only some have paid', async () => {
+    const { service, launch } = makeService();
+    await fill(service, tier.minPlayers);
+    await service.setReady(TIER, 'p0', true);
+
+    clock += tier.countdownSeconds * 1_000;
+    await service.tick(TIER);
+
+    expect(launch).not.toHaveBeenCalled();
+  });
+
+  it('leaves an unpaid player behind when enough others have paid', async () => {
+    const { service, launch } = makeService();
+    await fillAndPay(service, tier.minPlayers);
+    await service.join(TIER, player('freeloader'));
+
+    clock += tier.countdownSeconds * 1_000;
+    await service.tick(TIER);
+
+    const entered = launch.mock.calls[0]?.[0].players.map((p: { playerId: string }) => p.playerId);
+    expect(entered).toHaveLength(tier.minPlayers);
+    expect(entered).not.toContain('freeloader');
+  });
+
+  it('still launches a free room with nobody ready', async () => {
+    // Practice collects nothing, so there is no payment to wait for.
+    const { service, launch } = makeService();
+    const free = requireTier('practice');
+    await service.join('practice', player('solo'));
+
+    clock += free.countdownSeconds * 1_000;
+    await service.tick('practice');
+
+    expect(launch).toHaveBeenCalledOnce();
+  });
+});
+
 describe('launch failure handling', () => {
   it('resets the lobby instead of leaving it stuck in launching', async () => {
     // A lobby stuck in `launching` is worse than a lost batch: nobody can join,
@@ -211,8 +295,11 @@ describe('launch failure handling', () => {
     const store = new InMemoryLobbyStore();
     const service = new LobbyService({ store, now, launch, onError });
 
+    // Paid, so the countdown actually reaches a launch — the failure being
+    // tested is the launch itself, not the room declining to start.
     for (let i = 0; i < tier.minPlayers; i += 1) {
       await service.join(TIER, player(`p${i}`));
+      await service.setReady(TIER, `p${i}`, true);
     }
     clock += tier.countdownSeconds * 1_000;
     await service.tick(TIER);

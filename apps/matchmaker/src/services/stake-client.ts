@@ -92,6 +92,21 @@ export async function canAfford(tierId: string, token: string): Promise<AffordRe
 }
 
 /**
+ * Whether the caller's entry fee has actually reached this match's vault.
+ *
+ * Asked of the chain, through the gateway, because a staked match must not
+ * start until every entrant has paid — and "I have paid" is exactly the claim
+ * an unpaid client would make. Readiness in a paid room means this and nothing
+ * else, so the ready flag cannot be used to enter a match for free.
+ */
+export async function hasPaid(gameId: string, token: string): Promise<boolean> {
+  const result = await call<{ gameId: string; paid: boolean }>('/v1/wallet/has-paid', token, {
+    gameId,
+  });
+  return result.paid;
+}
+
+/**
  * Releases a reservation.
  *
  * Failures are swallowed by the caller on the leave path: a player must always
