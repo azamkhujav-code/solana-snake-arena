@@ -71,6 +71,9 @@ async function lobbiesPlugin(app: FastifyInstance): Promise<void> {
           roomId,
           nodeId: placement.nodeId,
           nickname: player.nickname,
+          // Binds the room to the game its escrow was funded under, so the node
+          // can report standings settlement can actually match to a vault.
+          gameId,
         }),
         config.JWT_SECRET,
       );

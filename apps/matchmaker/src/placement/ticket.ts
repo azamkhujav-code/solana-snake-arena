@@ -19,6 +19,16 @@ export interface TicketClaims {
   roomId: string;
   nodeId: string;
   nickname: string;
+  /**
+   * The game this room is playing out, when a launch prepared one.
+   *
+   * Carried on the ticket so the realtime node can report a result under the id
+   * settlement looks the game up by. Without it the node knows only its own
+   * room id, and the worker waits for a report that can never be addressed.
+   *
+   * Absent for direct entry, which has no game row and nothing to settle.
+   */
+  gameId?: string;
   /** Epoch ms. */
   issuedAt: number;
   expiresAt: number;
@@ -91,6 +101,7 @@ export function buildTicketClaims(params: {
   roomId: string;
   nodeId: string;
   nickname: string;
+  gameId?: string;
   now?: number;
 }): TicketClaims {
   const issuedAt = params.now ?? Date.now();
@@ -100,6 +111,9 @@ export function buildTicketClaims(params: {
     roomId: params.roomId,
     nodeId: params.nodeId,
     nickname: params.nickname,
+    // Omitted rather than set to undefined: the claims are JSON-serialised into
+    // the signed payload, and an explicit undefined would change the bytes.
+    ...(params.gameId === undefined ? {} : { gameId: params.gameId }),
     issuedAt,
     expiresAt: issuedAt + TICKET_TTL_MS,
   };

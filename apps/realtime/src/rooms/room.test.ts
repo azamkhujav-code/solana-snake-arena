@@ -42,7 +42,7 @@ function createIoStub() {
   };
 }
 
-function createRoom(overrides: { maxPlayers?: number } = {}) {
+function createRoom(overrides: { maxPlayers?: number; gameId?: string | null } = {}) {
   const io = createIoStub();
   const room = new Room({
     roomId: 'room-1',
@@ -51,6 +51,7 @@ function createRoom(overrides: { maxPlayers?: number } = {}) {
     maxPlayers: overrides.maxPlayers ?? 8,
     seed: 42,
     io: io as never,
+    gameId: overrides.gameId ?? null,
   });
 
   // `RoomManager.ensureRoom` always starts a room before handing it out, so a
@@ -262,16 +263,26 @@ describe('Room', () => {
       expect(result.standings.map((row) => row.playerId)).toContain('p1');
     });
 
-    it('drops a player who explicitly left', () => {
-      // The other side of the same coin: leaving forfeits the seat, so they are
-      // not an entrant to be paid.
+    it('keeps a player who explicitly left, ranked last', () => {
+      // Leaving forfeits the prize, not the row. This used to drop them, on the
+      // reasoning that a leaver is "not an entrant to be paid" — but settlement
+      // decides who is paid by placement, and it rejects any report missing
+      // somebody who staked (`missing-player`, since a missing entrant would
+      // silently forfeit their stake into the remainder). Dropping the loser
+      // therefore did not deny them a payout; it denied *everyone* one, because
+      // the report was thrown out whole.
+      //
+      // Last place pays nothing — the table is winner-takes-all — which is the
+      // outcome dropping them was reaching for, without breaking settlement.
       const { room } = createRoom();
       room.addPlayer('p1', 's1', 'alice');
       room.addPlayer('p2', 's2', 'bob');
 
       room.removePlayer('p1');
 
-      expect(room.buildResult('game-1').standings.map((row) => row.playerId)).toEqual(['p2']);
+      const standings = room.buildResult('game-1').standings;
+      expect(standings.map((row) => row.playerId).sort()).toEqual(['p1', 'p2']);
+      expect(standings.find((row) => row.playerId === 'p1')?.placement).toBe(2);
     });
 
     it('ranks the survivor first, not the highest scorer', () => {
@@ -376,6 +387,104 @@ describe('Room', () => {
       const { room } = createRoom();
       room.close();
       expect(() => room.close()).not.toThrow();
+    });
+  });
+
+  /**
+   * The hand-off to settlement.
+   *
+   * Standings were built correctly all along and then dropped on close, so a
+   * staked match ended with the pot in escrow and no record of the winner.
+   * These pin the conditions under which a result is worth reporting.
+   */
+  describe('match resolution', () => {
+    it('reports once one snake is left standing', () => {
+      const { room } = createRoom({ gameId: 'game-1' });
+      room.addPlayer('p1', 'socket-1', 'alice');
+      room.addPlayer('p2', 'socket-2', 'bob');
+
+      expect(room.hasResult()).toBe(false);
+
+      // p1 is knocked out, leaving p2 alone in the arena.
+      room.removePlayer('p1');
+
+      expect(room.aliveCount()).toBe(1);
+      expect(room.hasResult()).toBe(true);
+      expect(room.buildResult('game-1').standings[0]?.playerId).toBe('p2');
+    });
+
+    it('reports only once', () => {
+      // The alive count stays at one for every tick after the winner emerges,
+      // and settlement is not idempotent on a repeated report.
+      const { room } = createRoom({ gameId: 'game-1' });
+      room.addPlayer('p1', 'socket-1', 'alice');
+      room.addPlayer('p2', 'socket-2', 'bob');
+      room.removePlayer('p1');
+
+      expect(room.hasResult()).toBe(true);
+      room.markReported();
+
+      expect(room.hasResult()).toBe(false);
+    });
+
+    it('retries after a failed publish', () => {
+      const { room } = createRoom({ gameId: 'game-1' });
+      room.addPlayer('p1', 'socket-1', 'alice');
+      room.addPlayer('p2', 'socket-2', 'bob');
+      room.removePlayer('p1');
+
+      room.markReported();
+      room.unmarkReported();
+
+      expect(room.hasResult()).toBe(true);
+    });
+
+    it('does not report a room with no game behind it', () => {
+      // Direct entry has no game row and nothing staked, so there is nothing
+      // to settle and no id to settle it under.
+      const { room } = createRoom({ gameId: null });
+      room.addPlayer('p1', 'socket-1', 'alice');
+      room.addPlayer('p2', 'socket-2', 'bob');
+      room.removePlayer('p1');
+
+      expect(room.hasResult()).toBe(false);
+    });
+
+    it('does not report a solo player as a winner', () => {
+      // One entrant is not a match. Reporting it would settle a pot they were
+      // the only contributor to.
+      const { room } = createRoom({ gameId: 'game-1' });
+      room.addPlayer('p1', 'socket-1', 'alice');
+
+      expect(room.aliveCount()).toBe(1);
+      expect(room.hasResult()).toBe(false);
+    });
+
+    it('ranks a player who quit below one still playing', () => {
+      // Quitting used to be the most reliable way to win: a leaver had no
+      // elimination recorded, so they sorted ahead of everyone still alive.
+      const { room } = createRoom({ gameId: 'game-1' });
+      room.addPlayer('p1', 'socket-1', 'alice');
+      room.addPlayer('p2', 'socket-2', 'bob');
+
+      room.removePlayer('p1');
+
+      const standings = room.buildResult('game-1').standings;
+      expect(standings.find((row) => row.placement === 1)?.playerId).toBe('p2');
+      expect(standings.find((row) => row.playerId === 'p1')?.placement).toBe(2);
+    });
+
+    it('reports when every player has left', () => {
+      // A match everyone quit still has standings — whoever survived longest
+      // won it, and the escrow needs somewhere to go either way.
+      const { room } = createRoom({ gameId: 'game-1' });
+      room.addPlayer('p1', 'socket-1', 'alice');
+      room.addPlayer('p2', 'socket-2', 'bob');
+      room.removePlayer('p1');
+      room.removePlayer('p2');
+
+      expect(room.aliveCount()).toBe(0);
+      expect(room.hasResult()).toBe(true);
     });
   });
 });

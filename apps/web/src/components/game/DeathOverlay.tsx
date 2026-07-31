@@ -5,7 +5,6 @@ import type { PlayerDied } from '@arena/protocol';
 
 export interface DeathOverlayProps {
   death: PlayerDied | null;
-  onRespawn: () => void;
   onLeave: () => void;
 }
 
@@ -19,11 +18,16 @@ const CAUSE_TEXT: Record<string, string> = {
 /**
  * Death screen, shown over the live game.
  *
- * The canvas keeps rendering underneath — the player stays in spectator mode
- * watching the room rather than staring at a modal over a frozen frame, which
- * is what makes "respawn" feel like rejoining rather than restarting.
+ * Elimination is final: there is no respawn. The button used to be there, and
+ * it made the match unwinnable — a player knocked out of a staked room could
+ * simply come back, so "last snake standing" never resolved and the pot had no
+ * one to pay. Leaving is the only way out, which is what makes the survivor a
+ * winner rather than merely the person who was alive most recently.
+ *
+ * The canvas keeps rendering underneath so the player watches the match settle
+ * rather than staring at a modal over a frozen frame.
  */
-export function DeathOverlay({ death, onRespawn, onLeave }: DeathOverlayProps) {
+export function DeathOverlay({ death, onLeave }: DeathOverlayProps) {
   if (!death) return null;
 
   return (
@@ -47,16 +51,13 @@ export function DeathOverlay({ death, onRespawn, onLeave }: DeathOverlayProps) {
           </div>
         </dl>
 
-        <div className="flex gap-2">
-          <Button className="flex-1" onClick={onRespawn}>
-            Respawn
-          </Button>
-          <Button variant="secondary" onClick={onLeave}>
-            Leave
-          </Button>
-        </div>
+        <Button className="w-full" onClick={onLeave}>
+          Leave match
+        </Button>
 
-        <p className="mt-3 text-center text-xs text-slate-500">Spectating until you respawn.</p>
+        <p className="mt-3 text-center text-xs text-slate-500">
+          You are out of this match. Spectating until you leave.
+        </p>
       </Panel>
     </div>
   );

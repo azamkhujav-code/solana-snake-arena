@@ -94,3 +94,29 @@ describe('buildTicketClaims', () => {
     expect(claims.expiresAt - claims.issuedAt).toBe(30_000);
   });
 });
+
+describe('game binding', () => {
+  it('carries the game id when a launch prepared one', () => {
+    // The realtime node reports standings under this id. Without it the node
+    // knows only its own room id, and settlement waits for a report it can
+    // never address — so the pot stays in escrow.
+    const staked = buildTicketClaims({
+      playerId: 'player-1',
+      wallet: 'So11111111111111111111111111111111111111112',
+      roomId: 'room-abc',
+      nodeId: 'realtime-3',
+      nickname: 'snake',
+      gameId: 'game-42',
+      now: T0,
+    });
+
+    expect(verifyTicket(mintTicket(staked, SECRET), SECRET, T0).gameId).toBe('game-42');
+  });
+
+  it('omits the game id entirely for direct entry', () => {
+    // Serialised into the signed payload, so an explicit `undefined` would
+    // change the bytes being signed.
+    expect('gameId' in claims).toBe(false);
+    expect(verifyTicket(mintTicket(claims, SECRET), SECRET, T0).gameId).toBeUndefined();
+  });
+});

@@ -12,6 +12,8 @@ export interface TicketClaims {
   roomId: string;
   nodeId: string;
   nickname: string;
+  /** Set when a launch prepared a game; absent for direct entry. */
+  gameId?: string;
   issuedAt: number;
   expiresAt: number;
 }
@@ -105,6 +107,7 @@ export function registerAuthMiddleware(io: ArenaServer, redis: RedisClient): voi
         socket.data.playerId = claims.playerId;
         socket.data.wallet = claims.wallet;
         socket.data.roomId = claims.roomId;
+        socket.data.gameId = claims.gameId ?? null;
         socket.data.nickname = claims.nickname;
         socket.data.joinedAt = Date.now();
         socket.data.inputBudget = config.MAX_INPUTS_PER_SECOND;

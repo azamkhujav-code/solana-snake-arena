@@ -9,7 +9,7 @@ import { DeathOverlay, MobileControlsHint } from '@/components/game/DeathOverlay
 import { Hud } from '@/components/game/Hud';
 import { Minimap } from '@/components/game/Minimap';
 import type { GameEngine } from '@/game/engine';
-import { useLobbies } from '@/hooks/use-lobbies';
+import { useLeaveLobby, useLobbies } from '@/hooks/use-lobbies';
 import { useMatchmaking } from '@/hooks/use-matchmaking';
 import { useGameStore } from '@/stores/game-store';
 import { useSessionStore } from '@/stores/session-store';
@@ -40,6 +40,7 @@ export default function PlayPage() {
   const router = useRouter();
   const lobbies = useLobbies();
   const matchmaking = useMatchmaking();
+  const leaveLobby = useLeaveLobby();
 
   const engineRef = useRef<GameEngine | null>(null);
   const [death, setDeath] = useState<PlayerDied | null>(null);
@@ -49,18 +50,33 @@ export default function PlayPage() {
     engineRef.current = engine;
   }, []);
 
-  const respawn = useCallback(() => {
-    engineRef.current?.respawn();
-    setDeath(null);
-  }, []);
-
+  /**
+   * Leaves the match for good.
+   *
+   * `resetGame()` alone did not work, and the reason was the line below it:
+   * `ticket` falls back to `matchmaking.data`, which is React Query state that
+   * the store's reset cannot touch. Clearing the staged ticket just uncovered
+   * the mutation's copy, the canvas never unmounted, and the socket stayed
+   * open — so pressing Leave did nothing visible and the snake stayed in play.
+   *
+   * Order matters: tell the server first, while the socket is still up. Once
+   * the canvas unmounts there is nothing left to send the message on.
+   */
   const leave = useCallback(() => {
-    // Clearing game state unmounts the canvas, which closes the socket. The old
-    // `window.location.href` did work, but only because a full page load tears
-    // everything down — it discarded the whole app to close one connection.
+    engineRef.current?.leave();
+
+    // Drop out of the tier queue as well, or the lobby keeps a seat — and the
+    // next cycle launches a match for a player who is no longer here.
+    const queuedTier = lobbies.data?.currentTierId;
+    if (queuedTier) leaveLobby.mutate(queuedTier);
+
+    matchmaking.reset();
     resetGame();
+    setDeath(null);
     router.push('/');
-  }, [resetGame, router]);
+    // `matchmaking` and `leaveLobby` are stable mutation objects.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [resetGame, router, lobbies.data?.currentTierId]);
 
   const ticket = stagedTicket ?? matchmaking.data ?? null;
 
@@ -102,10 +118,10 @@ export default function PlayPage() {
         onEngineReady={handleEngineReady}
       />
 
-      <Hud />
+      <Hud onLeave={leave} />
       {showMinimap ? <Minimap /> : null}
 
-      <DeathOverlay death={death} onRespawn={respawn} onLeave={leave} />
+      <DeathOverlay death={death} onLeave={leave} />
       <MobileControlsHint visible={!death && ticket !== null} />
 
       {!ticket ? (

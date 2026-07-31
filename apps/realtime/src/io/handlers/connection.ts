@@ -24,7 +24,7 @@ import type { ArenaServer } from '../socket-server.js';
  */
 export function registerConnectionHandlers(io: ArenaServer, rooms: RoomManager, log: Logger): void {
   io.on('connection', (socket) => {
-    const { playerId, roomId, nickname } = socket.data;
+    const { playerId, roomId, gameId, nickname } = socket.data;
     socketEvents.inc({ event: 'connect' });
 
     if (!playerId || !roomId) {
@@ -39,7 +39,7 @@ export function registerConnectionHandlers(io: ArenaServer, rooms: RoomManager, 
 
     let room;
     try {
-      room = rooms.ensureRoom(roomId);
+      room = rooms.ensureRoom(roomId, 'casual', 'us-east', gameId ?? null);
     } catch (error) {
       log.error({ err: error, roomId }, 'could not allocate room');
       socket.emit(ServerEvent.Error, {

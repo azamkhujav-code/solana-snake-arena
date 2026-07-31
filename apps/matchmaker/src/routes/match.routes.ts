@@ -19,6 +19,35 @@ import { buildTicketClaims, mintTicket, TICKET_TTL_MS } from '../placement/ticke
  * the realtime server simply accepting a player JWT: a JWT says who you are and
  * says nothing about which room you are entitled to enter.
  */
+
+/** The world direct entrants to one tier currently share. */
+interface OpenMatch {
+  roomId: string;
+  nodeId: string;
+  realtimeUrl: string;
+}
+
+const openMatchKey = (tierId: string): string => `match:open:${tierId}`;
+
+/**
+ * How long one direct-entry world keeps taking arrivals.
+ *
+ * Long enough that players opening the same room a minute apart still meet;
+ * short enough that nobody joins a match already most of the way through.
+ */
+const OPEN_MATCH_TTL_MS = 5 * 60_000;
+
+function parseOpenMatch(raw: string | null): OpenMatch | null {
+  if (!raw) return null;
+
+  try {
+    const parsed = JSON.parse(raw) as Partial<OpenMatch>;
+    if (!parsed.roomId || !parsed.nodeId || !parsed.realtimeUrl) return null;
+    return parsed as OpenMatch;
+  } catch {
+    return null;
+  }
+}
 export async function matchmakingRoutes(app: FastifyInstance): Promise<void> {
   const api = app.withTypeProvider<ZodTypeProvider>();
 
@@ -85,10 +114,6 @@ export async function matchmakingRoutes(app: FastifyInstance): Promise<void> {
        * them apart from the next. So when a launch has already issued this
        * player a ticket, that is the room they belong in — reusing it rather
        * than inventing another is the whole point.
-       *
-       * Otherwise this is a direct entry with no launch behind it, and a fresh
-       * id gives a world that starts empty at 0:00 rather than resuming
-       * somebody else's.
        */
       const staged = await app.redis.get(`ticket:meta:${playerId}`);
 
@@ -116,13 +141,70 @@ export async function matchmakingRoutes(app: FastifyInstance): Promise<void> {
         }
       }
 
-      const roomId = randomUUID().replace(/-/g, '').slice(0, 16);
+      /**
+       * Direct entry, with no launch behind it.
+       *
+       * A fresh id per caller was the obvious thing and the wrong one: two
+       * people opening the same room seconds apart each got a private world and
+       * a snake with nobody to play against. The room they picked said nothing
+       * about where they ended up.
+       *
+       * So direct entrants share the tier's currently open world instead. The
+       * pointer carries the node as well as the room — placement is decided per
+       * request, and two players sent to different nodes would sit in
+       * identically-named rooms on separate machines, which looks exactly like
+       * the bug being fixed.
+       *
+       * The TTL is what keeps a match a match: it bounds how long one world
+       * keeps accepting arrivals, so a later player starts a fresh game at 0:00
+       * rather than joining one already half-played.
+       */
+      const openKey = openMatchKey(request.body.tierId ?? mode);
+      const isHealthy = (nodeId: string): boolean => healthy.some((node) => node.nodeId === nodeId);
+
+      let open = parseOpenMatch(await app.redis.get(openKey));
+      // A pointer at a node that has since gone away is worse than none: every
+      // ticket it mints names a node nobody is listening on.
+      if (open && !isHealthy(open.nodeId)) open = null;
+
+      if (!open) {
+        const candidate: OpenMatch = {
+          roomId: randomUUID().replace(/-/g, '').slice(0, 16),
+          nodeId: decision.nodeId,
+          realtimeUrl: decision.advertiseUrl,
+        };
+
+        // NX so two players arriving at once cannot each create a world and
+        // then each believe they own the tier.
+        const claimed = await app.redis.set(
+          openKey,
+          JSON.stringify(candidate),
+          'PX',
+          OPEN_MATCH_TTL_MS,
+          'NX',
+        );
+
+        if (claimed === 'OK') {
+          open = candidate;
+        } else {
+          const raced = parseOpenMatch(await app.redis.get(openKey));
+
+          if (raced && isHealthy(raced.nodeId)) {
+            open = raced;
+          } else {
+            // The key exists but names a dead node, so NX will never take.
+            // Overwrite it outright rather than handing out a broken placement.
+            open = candidate;
+            await app.redis.set(openKey, JSON.stringify(candidate), 'PX', OPEN_MATCH_TTL_MS);
+          }
+        }
+      }
 
       const claims = buildTicketClaims({
         playerId,
         wallet: request.user.wallet,
-        roomId,
-        nodeId: decision.nodeId,
+        roomId: open.roomId,
+        nodeId: open.nodeId,
         // The player's own name. This used to be `playerId.slice(0, 16)`, which
         // put a UUID fragment above every snake and down the leaderboard —
         // players could not tell each other apart, let alone recognise
@@ -138,8 +220,8 @@ export async function matchmakingRoutes(app: FastifyInstance): Promise<void> {
       await app.redis.set(redisKeys.matchTicket(playerId), ticket, 'PX', TICKET_TTL_MS);
 
       return {
-        roomId,
-        realtimeUrl: decision.advertiseUrl,
+        roomId: open.roomId,
+        realtimeUrl: open.realtimeUrl,
         ticket,
         expiresAt: claims.expiresAt,
         region,

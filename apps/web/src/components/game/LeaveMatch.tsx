@@ -1,7 +1,6 @@
 'use client';
 
 import { ROOM_TIERS } from '@arena/protocol';
-import { useRouter } from 'next/navigation';
 import { useCallback, useState } from 'react';
 
 import { formatSolShort } from '@/lib/lobby-state';
@@ -21,11 +20,9 @@ import { useGameStore } from '@/stores/game-store';
  * to lose and leaves immediately — a confirmation that never carries a cost only
  * teaches people to click through the one that does.
  */
-export function LeaveMatch() {
-  const router = useRouter();
+export function LeaveMatch({ onQuit }: { onQuit: () => void }) {
   const roomId = useGameStore((state) => state.roomId);
   const alive = useGameStore((state) => state.alive);
-  const reset = useGameStore((state) => state.reset);
   const [confirming, setConfirming] = useState(false);
 
   // The realtime room is keyed by tier, so this is what says whether the match
@@ -39,12 +36,11 @@ export function LeaveMatch() {
   const forfeits = entryFee > 0n && alive;
 
   const quit = useCallback(() => {
-    // Clearing the ticket is what unmounts the canvas, and the canvas closes
-    // the socket on unmount — so the server sees the disconnect immediately
-    // rather than waiting out a timeout with an idle snake still in play.
-    reset();
-    router.push('/');
-  }, [reset, router]);
+    // Delegated so both exits — this button and the death screen's — run the
+    // same teardown. This one used to only `reset()`, which left the match
+    // mutation holding a ticket and the socket open behind it.
+    onQuit();
+  }, [onQuit]);
 
   if (confirming) {
     return (

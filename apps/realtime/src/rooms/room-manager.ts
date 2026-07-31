@@ -7,6 +7,14 @@ import type { ArenaServer } from '../io/socket-server.js';
 import { playersGauge, roomsGauge, tickLag } from '../metrics.js';
 import { Room } from './room.js';
 
+/**
+ * How long a published result stays readable.
+ *
+ * Long enough to outlive settlement's retry budget, so a worker that is down
+ * when the match ends still finds the standings when it comes back.
+ */
+const RESULT_TTL_SECONDS = 24 * 60 * 60;
+
 export interface RoomManagerOptions {
   logger: Logger;
   redis: RedisClient;
@@ -51,9 +59,20 @@ export class RoomManager {
   }
 
   /** Returns the room, creating it on first join. */
-  ensureRoom(roomId: string, mode = 'casual', region = 'us-east'): Room {
+  ensureRoom(
+    roomId: string,
+    mode = 'casual',
+    region = 'us-east',
+    gameId: string | null = null,
+  ): Room {
     const existing = this.rooms.get(roomId);
-    if (existing) return existing;
+    if (existing) {
+      // A room is created by whichever handshake arrives first. If that one was
+      // a direct entry it carried no game id, so the first ticket that does
+      // supplies it rather than leaving the match unsettleable.
+      if (existing.gameId === null && gameId !== null) existing.gameId = gameId;
+      return existing;
+    }
 
     if (this.rooms.size >= config.MAX_ROOMS_PER_NODE) {
       throw new Error(`Node ${config.NODE_ID} is at its room cap`);
@@ -67,6 +86,7 @@ export class RoomManager {
       // Seeded from the room id so a replay can reproduce the world exactly.
       seed: hashSeed(roomId),
       io: this.io,
+      gameId,
     });
 
     room.start();
@@ -133,12 +153,55 @@ export class RoomManager {
       this.nextTickAt += TICK_INTERVAL_MS;
     }
 
+    this.reportFinishedMatches();
     this.reapEmptyRooms();
 
     roomsGauge.set(this.rooms.size);
     playersGauge.set(this.playerCount);
 
     this.scheduleNext();
+  }
+
+  /**
+   * Publishes standings for any match that has produced a winner.
+   *
+   * This is the hand-off to settlement, which polls `match:result:{gameId}` and
+   * refuses to pay out without it. The room built the standings all along and
+   * simply dropped them on close, so a staked match ended with the pot sitting
+   * in escrow and no record of who had won it.
+   *
+   * Fire-and-forget against the tick loop: the loop must not await Redis, and a
+   * failed write is retried on the next tick because `markReported` only runs
+   * once the write has landed.
+   */
+  private reportFinishedMatches(): void {
+    for (const room of this.rooms.values()) {
+      if (!room.hasResult()) continue;
+
+      const gameId = room.gameId;
+      if (gameId === null) continue;
+
+      const result = room.buildResult(gameId);
+      // Marked before the await so a slow write cannot be started twice by the
+      // next tick; a rejection below clears it so the attempt repeats.
+      room.markReported();
+
+      void this.redis
+        .set(`match:result:${gameId}`, JSON.stringify(result), 'EX', RESULT_TTL_SECONDS)
+        .then(() => {
+          this.log.info(
+            { roomId: room.roomId, gameId, standings: result.standings.length },
+            'match result reported',
+          );
+          // Nothing left to play for. Draining lets the survivor's client see
+          // the final frame, then the room is reaped once everyone has gone.
+          room.drain();
+        })
+        .catch((error: unknown) => {
+          room.unmarkReported();
+          this.log.error({ err: error, roomId: room.roomId, gameId }, 'failed to report result');
+        });
+    }
   }
 
   private reapEmptyRooms(): void {

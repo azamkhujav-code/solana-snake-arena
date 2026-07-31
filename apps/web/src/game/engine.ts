@@ -369,6 +369,18 @@ export class GameEngine {
     }
   }
 
+  /**
+   * Tells the server the player is leaving for good.
+   *
+   * Without this the only signal is the socket closing, which the room treats
+   * as a blip: the seat is held for the reconnect grace window with the snake
+   * still in the arena. For a staked match that means the player who quit is
+   * still alive to everyone else, and can still "win" it by outlasting them.
+   */
+  leave(): void {
+    this.socket?.emit(ClientEvent.Leave);
+  }
+
   /** Requests a respawn and leaves spectator mode. */
   respawn(): void {
     this.socket?.emit(ClientEvent.Respawn, () => {

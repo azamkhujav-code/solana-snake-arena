@@ -32,7 +32,7 @@ const QUALITY_COLOUR: Record<Quality, string> = {
  * The container is `pointer-events-none` so the HUD never swallows a click
  * meant for the canvas; individual panels opt back in where needed.
  */
-export function Hud() {
+export function Hud({ onLeave }: { onLeave: () => void }) {
   return (
     <div className="pointer-events-none fixed inset-0 select-none p-3 sm:p-4">
       <div className="flex items-start justify-between gap-3">
@@ -47,7 +47,7 @@ export function Hud() {
           <WalletChip />
           {/* The only way out while alive. The HUD container is
               `pointer-events-none`; this opts back in. */}
-          <LeaveMatch />
+          <LeaveMatch onQuit={onLeave} />
         </div>
 
         <Leaderboard />

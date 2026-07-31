@@ -21,8 +21,8 @@ RUN pnpm dlx turbo@2.10.7 prune @arena/web --docker
 FROM base AS installer
 WORKDIR /repo
 COPY --from=pruner /repo/out/json/ .
-RUN --mount=type=cache,id=pnpm,target=/pnpm/store \
-    pnpm install --frozen-lockfile
+# See node-service.Dockerfile: Railway rejects non-service-scoped cache mount ids.
+RUN pnpm install --frozen-lockfile
 COPY --from=pruner /repo/out/full/ .
 
 # NEXT_PUBLIC_* values are inlined at build time, so they must be present here

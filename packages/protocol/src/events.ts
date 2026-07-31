@@ -73,6 +73,8 @@ export interface SocketData {
   playerId: string;
   wallet: string;
   roomId: string | null;
+  /** The game this room plays out, when a launch prepared one. */
+  gameId: string | null;
   nickname: string;
   joinedAt: number;
   /** Rolling counter used by the per-socket input rate limiter. */

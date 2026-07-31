@@ -24,6 +24,8 @@ export interface RoomOptions {
   maxPlayers: number;
   seed: number;
   io: ArenaServer;
+  /** The game this room plays out. Null for direct entry, which has no stake. */
+  gameId?: string | null;
 }
 
 interface Seat {
@@ -87,12 +89,34 @@ export class Room {
   /** Increments per death, so ties on the same tick still order deterministically. */
   private eliminationCounter = 0;
 
+  /**
+   * The game this room settles as, when a launch prepared one.
+   *
+   * Mutable because a room is created by the first handshake that names it, and
+   * the manager keys rooms by id alone — the game id rides in on the ticket, so
+   * it is learned rather than constructed.
+   */
+  gameId: string | null;
+
+  /**
+   * Everyone who ever held a seat.
+   *
+   * `seats` empties as players leave, so it cannot answer "was this a match or
+   * one person alone" by the time the last snake is standing — which is exactly
+   * when that question decides whether a result is worth reporting.
+   */
+  private readonly entrants = new Set<string>();
+
+  /** Set once standings have been handed to the manager, so they go out once. */
+  private reported = false;
+
   constructor(options: RoomOptions) {
     this.roomId = options.roomId;
     this.mode = options.mode;
     this.region = options.region;
     this.maxPlayers = options.maxPlayers;
     this.io = options.io;
+    this.gameId = options.gameId ?? null;
 
     this.simulation = new Simulation({
       tickRateHz: config.TICK_RATE_HZ,
@@ -148,6 +172,7 @@ export class Room {
       disconnectedAtMs: null,
       shadowbanned: false,
     });
+    this.entrants.add(playerId);
 
     this.simulation.spawnSnake(this.world, playerId, nickname);
   }
@@ -165,6 +190,27 @@ export class Room {
 
   removePlayer(playerId: string): void {
     if (!this.seats.delete(playerId)) return;
+
+    // Leaving is an elimination, and has to be recorded as one.
+    //
+    // Without this a player who quit had no entry here, so `buildResult` read
+    // their elimination order as `Infinity` and ranked them *ahead* of everyone
+    // still playing — quitting a staked match was the most reliable way to win
+    // it. Capturing their score at the same moment matters for the same reason
+    // the death path does it: the snake is about to be despawned.
+    if (!this.eliminations.has(playerId)) {
+      const snake = this.simulation.getByPlayerId(this.world, playerId);
+      if (snake) {
+        this.finalScores.set(playerId, { score: snake.score, kills: snake.kills });
+      }
+
+      this.eliminationCounter += 1;
+      this.eliminations.set(playerId, {
+        tick: this.eliminationCounter,
+        survivedMs: Math.floor(this.world.elapsedMs),
+      });
+    }
+
     this.simulation.despawnSnake(this.world, playerId);
     this.recentlyRemoved.push(playerId);
   }
@@ -423,14 +469,21 @@ export class Room {
   } {
     const matchMs = Math.floor(this.world.elapsedMs);
 
-    const rows = [...this.seats.values()].map((seat) => {
-      const snake = this.simulation.getByPlayerId(this.world, seat.playerId);
-      const elimination = this.eliminations.get(seat.playerId);
+    // Over everyone who ever sat down, not the current seats.
+    //
+    // `removePlayer` deletes the seat, so anyone who was knocked out and left
+    // had already vanished from here by the time the match resolved. Settlement
+    // rejects a report that omits an entrant — `missing-player`, on the grounds
+    // that a missing one would silently forfeit — so a match where the loser
+    // quit could never be settled at all.
+    const rows = [...this.entrants].map((playerId) => {
+      const snake = this.simulation.getByPlayerId(this.world, playerId);
+      const elimination = this.eliminations.get(playerId);
 
       return {
-        playerId: seat.playerId,
-        score: snake?.score ?? this.finalScores.get(seat.playerId)?.score ?? 0,
-        kills: snake?.kills ?? this.finalScores.get(seat.playerId)?.kills ?? 0,
+        playerId,
+        score: snake?.score ?? this.finalScores.get(playerId)?.score ?? 0,
+        kills: snake?.kills ?? this.finalScores.get(playerId)?.kills ?? 0,
         // Survivors are credited with the full match; the eliminated with the
         // moment they went out.
         survivedMs: elimination?.survivedMs ?? matchMs,
@@ -462,6 +515,46 @@ export class Room {
         placement: index + 1,
       })),
     };
+  }
+
+  /** Players still holding a live snake. */
+  aliveCount(): number {
+    let alive = 0;
+    for (const seat of this.seats.values()) {
+      if (this.simulation.getByPlayerId(this.world, seat.playerId)) alive += 1;
+    }
+    return alive;
+  }
+
+  /**
+   * Whether this match has produced a winner worth reporting.
+   *
+   * The last snake standing decides a staked match, so the moment at most one
+   * remains alive there is nothing left to play for. Requires two entrants:
+   * a lone player in a room they opened is not a match, and reporting one would
+   * settle a pot they were the only contributor to.
+   *
+   * Reported once — the alive count stays at one for every tick after the
+   * winner emerges, and settlement is not idempotent on repeat reports.
+   */
+  hasResult(): boolean {
+    return (
+      !this.reported &&
+      this.gameId !== null &&
+      this.entrants.size >= 2 &&
+      this.aliveCount() <= 1 &&
+      (this.status === 'active' || this.status === 'draining')
+    );
+  }
+
+  /** Marks the standings as handed off. See `hasResult`. */
+  markReported(): void {
+    this.reported = true;
+  }
+
+  /** Reverses `markReported` so a failed publish is retried on the next tick. */
+  unmarkReported(): void {
+    this.reported = false;
   }
 
   /** Stops accepting joins and lets the room empty out. */
