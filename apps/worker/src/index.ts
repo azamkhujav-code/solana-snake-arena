@@ -12,6 +12,7 @@ import {
   registerScheduler,
   removeScheduler,
 } from './cycle/queue.js';
+import { createRoomEnsurer } from './cycle/ensure-rooms.js';
 import { createCycleWorker } from './cycle/worker.js';
 import { loadSettlementAuthority } from './lib/settlement-authority.js';
 
@@ -107,6 +108,23 @@ async function main(): Promise<void> {
     // rather than quietly paying the wrong person.
     feeDestination: config.FEE_DESTINATION ?? settlementAuthority?.publicKey.toBase58() ?? '',
   });
+
+  /**
+   * Opens rooms for tiers people are actually queued in.
+   *
+   * Runs far more often than the cycle because it is answering a different
+   * question: the cycle asks "is it time for the next match", this asks "is
+   * there anybody waiting who cannot pay yet". A player who joins between
+   * cycles needs the second one answered in seconds, not on the next window.
+   *
+   * Cheap when idle — a Redis read per paid tier and nothing else until someone
+   * queues — and `unref`ed so it never holds the process open at shutdown.
+   */
+  const ensureRooms = createRoomEnsurer({ solana, lobbies, log });
+  const roomTimer = setInterval(() => {
+    void ensureRooms().catch((err: unknown) => log.error({ err }, 'room ensurer failed'));
+  }, 15_000);
+  roomTimer.unref();
 
   if (config.WORKER_SCHEDULER_ENABLED) {
     await registerScheduler(queue);
