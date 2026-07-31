@@ -113,8 +113,32 @@ describe('multiplayer', () => {
       await harness.connect(ticket);
 
       expect(harness.tickets.has('ticket:p-once')).toBe(false);
+    });
 
-      const reason = await expectConnectionRejected(harness.url, ticket);
+    it('readmits the player to the seat they still hold', async () => {
+      // The socket reconnects on its own and the room holds a seat for the
+      // grace window — but the ticket was spent on the first handshake, so a
+      // dropped connection came back to "already used or expired" and lost the
+      // player a match they were in the middle of. The grace window could never
+      // be reached.
+      const ticket = harness.issueTicket({ playerId: 'p-back', roomId: 'test-room' });
+      const first = await harness.connect(ticket);
+      first.disconnect();
+
+      const second = await harness.connect(ticket);
+      expect(second.connected).toBe(true);
+      second.disconnect();
+    });
+
+    it('does not let a spent ticket reach a different room', async () => {
+      // Readmission is bound to the room the seat is in, so a spent ticket
+      // cannot be replayed to get in somewhere the player was never placed.
+      await harness.connect(harness.issueTicket({ playerId: 'p-else', roomId: 'test-room' }));
+
+      const elsewhere = harness.issueTicket({ playerId: 'p-else', roomId: 'other-room' });
+      harness.tickets.delete('ticket:p-else');
+
+      const reason = await expectConnectionRejected(harness.url, elsewhere);
       expect(reason).toMatch(/already used|expired/i);
     });
   });

@@ -6,6 +6,24 @@ import { config } from '../../config.js';
 import type { ArenaServer } from '../socket-server.js';
 import { clientAddress, ConnectionGuard } from './connection-guard.js';
 
+/**
+ * Where a player is allowed back into, and for how long.
+ *
+ * Deliberately keyed by player rather than by ticket: the ticket is gone by the
+ * time this matters, and the question being answered is "is this the person
+ * whose seat is still warm", not "is this credential fresh".
+ */
+const reconnectKey = (playerId: string): string => `reconnect:${playerId}`;
+
+/**
+ * Slack on top of the room's grace window.
+ *
+ * The room evicts the seat on a tick, not on a timer, and a reconnecting client
+ * spends a moment on DNS and the handshake. Expiring this first would refuse a
+ * player the room was still holding a place for.
+ */
+const RECONNECT_MARGIN_SECONDS = 10;
+
 export interface TicketClaims {
   playerId: string;
   wallet: string;
@@ -99,10 +117,42 @@ export function registerAuthMiddleware(io: ArenaServer, redis: RedisClient): voi
         // connections both observe the ticket as unused — exactly the duplicate
         // session the single-use rule exists to prevent.
         const consumed = await redis.getdel(redisKeys.matchTicket(claims.playerId));
+
         if (consumed === null) {
-          next(new Error('INVALID_TICKET: ticket already used or expired'));
-          return;
+          /**
+           * Spent — but this may be the same player coming back.
+           *
+           * The socket reconnects automatically, and the room holds a seat for
+           * `RECONNECT_GRACE_SECONDS` precisely so a dropped connection does not
+           * cost a run. Those two could never meet: the ticket is consumed on
+           * the first handshake, so the reconnect presented a spent one and was
+           * refused with "ticket already used or expired" — mid-match, to a
+           * player who had done nothing but lose their network for a moment.
+           * The grace window was unreachable.
+           *
+           * A reconnect note is written below on every successful handshake and
+           * lives exactly as long as the seat does. It readmits one player to
+           * the one room they are already sitting in, which is not the hole the
+           * single-use rule closes: a stolen ticket still cannot open a session
+           * anywhere, and a second player still cannot enter on somebody else's.
+           */
+          const note = await redis.get(reconnectKey(claims.playerId));
+
+          if (note !== claims.roomId) {
+            next(new Error('INVALID_TICKET: ticket already used or expired'));
+            return;
+          }
         }
+
+        // Refreshed on every handshake, so it tracks the seat rather than the
+        // original join — a player who reconnects twice gets the same window
+        // the first reconnect had.
+        await redis.set(
+          reconnectKey(claims.playerId),
+          claims.roomId,
+          'EX',
+          config.RECONNECT_GRACE_SECONDS + RECONNECT_MARGIN_SECONDS,
+        );
 
         socket.data.playerId = claims.playerId;
         socket.data.wallet = claims.wallet;
