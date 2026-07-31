@@ -23,7 +23,13 @@ import {
   Transaction,
   sendAndConfirmTransaction,
 } from '@solana/web3.js';
-import { ArenaService, findConfigPda, findRoomPda, roomIdFromUuid } from '@arena/solana';
+import {
+  ArenaService,
+  findConfigPda,
+  findRoomPda,
+  findRoomPlayerPda,
+  roomIdFromUuid,
+} from '@arena/solana';
 import { io } from 'socket.io-client';
 import nacl from 'tweetnacl';
 import bs58 from 'bs58';
@@ -230,6 +236,15 @@ console.log('\nPaying entry fees (enter_room, signed by each player)…');
 const vaultBefore = await balance(vault);
 
 for (const [i, p] of players.entries()) {
+  // `enter_room` opens a per-player account, so paying twice fails with
+  // "already in use" rather than charging twice. Checking first turns a rerun
+  // against the same game from a confusing failure into a no-op.
+  const [entry] = findRoomPlayerPda(PROGRAM_ID, roomPda, p.publicKey);
+  if (await connection.getAccountInfo(entry)) {
+    console.log(`  player ${i + 1} had already paid into this game`);
+    continue;
+  }
+
   try {
     const ix = arena.buildEnterRoomInstruction({ player: p.publicKey, roomId: roomIdBytes });
     const sig = await sendAndConfirmTransaction(connection, new Transaction().add(ix), [p], {
@@ -238,6 +253,29 @@ for (const [i, p] of players.entries()) {
     console.log(`  player ${i + 1} paid  ${sig.slice(0, 16)}…`);
   } catch (err) {
     console.log(`  player ${i + 1} FAILED to pay: ${String(err).slice(0, 200)}`);
+  }
+}
+
+/**
+ * Report the payment, the way the browser does.
+ *
+ * A paid room starts only with players carrying the ready flag, and that flag
+ * is what a confirmed entry fee sets — `useEntryFee` calls this the moment the
+ * transaction lands. Paying without reporting it leaves the money in the vault
+ * and the match refusing to start, which is the rule working rather than
+ * failing, but it does mean this step is not optional.
+ */
+console.log('\nMarking paid players ready…');
+for (const [i, token] of tokens.entries()) {
+  try {
+    await http(MATCHMAKER, '/v1/lobbies/ready', {
+      method: 'POST',
+      body: { tierId: TIER, ready: true },
+      token,
+    });
+    console.log(`  player ${i + 1} ready`);
+  } catch (err) {
+    console.log(`  player ${i + 1} could not ready: ${String(err).slice(0, 160)}`);
   }
 }
 
