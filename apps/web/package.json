@@ -40,7 +40,7 @@
     "@arena/env": "workspace:*",
     "@arena/eslint-config": "workspace:*",
     "@arena/typescript-config": "workspace:*",
-    "@next/bundle-analyzer": "^15.5.22",
+    "@next/bundle-analyzer": "^16.2.12",
     "@tailwindcss/postcss": "^4.3.3",
     "@tanstack/react-query-devtools": "^5.101.4",
     "@types/node": "^22.10.5",
