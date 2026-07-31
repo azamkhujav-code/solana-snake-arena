@@ -176,6 +176,26 @@ export class RoomManager {
    */
   private reportFinishedMatches(): void {
     for (const room of this.rooms.values()) {
+      if (!room.isResolved()) continue;
+
+      /**
+       * Told first, and whether or not there is anything to settle.
+       *
+       * These two used to be one step, so a match only ended if it had a pot —
+       * and a free match therefore never ended at all. Its players kept
+       * steering around an arena that had already been decided, because the
+       * code that noticed the last snake standing was also the code that paid
+       * out, and there was nothing to pay.
+       */
+      if (!room.hasAnnounced()) {
+        room.announceEnd(room.buildResult(room.gameId));
+        room.markAnnounced();
+
+        // Nothing left to play for. Draining lets the last frame reach every
+        // client, and the room is reaped once they have all gone.
+        room.drain();
+      }
+
       if (!room.hasResult()) continue;
 
       const gameId = room.gameId;
@@ -186,11 +206,6 @@ export class RoomManager {
       // next tick; a rejection below clears it so the attempt repeats.
       room.markReported();
 
-      // Announced before the write, and independently of it: the players are
-      // waiting on this and it costs nothing, whereas the Redis round trip
-      // below is for the settlement worker and can take as long as it likes.
-      room.announceEnd(result);
-
       void this.redis
         .set(`match:result:${gameId}`, JSON.stringify(result), 'EX', RESULT_TTL_SECONDS)
         .then(() => {
@@ -198,9 +213,6 @@ export class RoomManager {
             { roomId: room.roomId, gameId, standings: result.standings.length },
             'match result reported',
           );
-          // Nothing left to play for. Draining lets the survivor's client see
-          // the final frame, then the room is reaped once everyone has gone.
-          room.drain();
         })
         .catch((error: unknown) => {
           room.unmarkReported();

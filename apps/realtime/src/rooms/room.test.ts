@@ -439,6 +439,30 @@ describe('Room', () => {
       expect(room.hasResult()).toBe(true);
     });
 
+    it('resolves a free match too, even though there is nothing to settle', () => {
+      // Ending a match and paying for one were the same check, so a room with
+      // no pot never ended: its players kept steering around an arena that had
+      // already been decided.
+      const { room } = createRoom({ gameId: null });
+      room.addPlayer('p1', 'socket-1', 'alice');
+      room.addPlayer('p2', 'socket-2', 'bob');
+      room.removePlayer('p1');
+
+      expect(room.isResolved()).toBe(true);
+      expect(room.hasResult()).toBe(false);
+    });
+
+    it('announces once', () => {
+      const { room } = createRoom({ gameId: null });
+      room.addPlayer('p1', 'socket-1', 'alice');
+      room.addPlayer('p2', 'socket-2', 'bob');
+      room.removePlayer('p1');
+
+      expect(room.hasAnnounced()).toBe(false);
+      room.markAnnounced();
+      expect(room.hasAnnounced()).toBe(true);
+    });
+
     it('does not report a room with no game behind it', () => {
       // Direct entry has no game row and nothing staked, so there is nothing
       // to settle and no id to settle it under.

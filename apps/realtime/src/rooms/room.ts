@@ -110,6 +110,9 @@ export class Room {
   /** Set once standings have been handed to the manager, so they go out once. */
   private reported = false;
 
+  /** Set once the players have been told, so they are told exactly once. */
+  private announced = false;
+
   constructor(options: RoomOptions) {
     this.roomId = options.roomId;
     this.mode = options.mode;
@@ -454,8 +457,8 @@ export class Room {
    * Placement is assigned here, on the authority, rather than inferred later
    * from scores that may have tied.
    */
-  buildResult(gameId: string): {
-    gameId: string;
+  buildResult(gameId: string | null): {
+    gameId: string | null;
     roomId: string;
     nodeId: string;
     endedAtMs: number;
@@ -537,14 +540,35 @@ export class Room {
    * Reported once — the alive count stays at one for every tick after the
    * winner emerges, and settlement is not idempotent on repeat reports.
    */
-  hasResult(): boolean {
+  isResolved(): boolean {
     // Status first: `aliveCount` reads the world, which only exists once the
     // room has started, and a closed room has already dropped its seats.
     if (this.status !== 'active' && this.status !== 'draining') return false;
 
-    return (
-      !this.reported && this.gameId !== null && this.entrants.size >= 2 && this.aliveCount() <= 1
-    );
+    return this.entrants.size >= 2 && this.aliveCount() <= 1;
+  }
+
+  /**
+   * Standings worth handing to settlement.
+   *
+   * Narrower than `isResolved` by exactly one thing: a game to settle. Every
+   * match ends when one snake is left, but only a staked one has a pot, and
+   * this used to be the only check — so a free match never ended at all. The
+   * players simply kept steering around an arena that had already been decided,
+   * because the code that noticed was also the code that paid, and there was
+   * nothing to pay.
+   */
+  hasResult(): boolean {
+    return !this.reported && this.gameId !== null && this.isResolved();
+  }
+
+  /** Whether the room has already told its players the match is over. */
+  hasAnnounced(): boolean {
+    return this.announced;
+  }
+
+  markAnnounced(): void {
+    this.announced = true;
   }
 
   /** Marks the standings as handed off. See `hasResult`. */
@@ -567,7 +591,7 @@ export class Room {
    * match they paid into.
    */
   announceEnd(result: {
-    gameId: string;
+    gameId: string | null;
     standings: Array<{ playerId: string; placement: number; score: number; kills: number }>;
   }): void {
     const winner = result.standings.find((row) => row.placement === 1) ?? null;
