@@ -83,7 +83,15 @@ async function lobbiesPlugin(app: FastifyInstance): Promise<void> {
       await app.redis.set(`ticket:${player.playerId}`, ticket, 'EX', 60);
       await app.redis.set(
         `ticket:meta:${player.playerId}`,
-        JSON.stringify({ roomId, gameId, realtimeUrl: placement.advertiseUrl }),
+        // `tierId` is carried so the client can be told which room this seat is
+        // for. Launching clears the queue, so by the time the player polls,
+        // their own membership no longer names the tier they are entering.
+        JSON.stringify({
+          roomId,
+          gameId,
+          tierId: request.tierId,
+          realtimeUrl: placement.advertiseUrl,
+        }),
         'EX',
         60,
       );

@@ -369,6 +369,25 @@ export const lobbyListResponseSchema = z.object({
   lobbies: z.array(lobbySummarySchema),
   /** Tier the caller is currently queued in, if any. */
   currentTierId: z.string().nullable(),
+  /**
+   * A match that has launched and is holding a seat for the caller.
+   *
+   * The client used to detect its match starting by watching for the lobby to
+   * enter `launching`. That state lasts a single moment — the lobby launches
+   * and immediately reopens for the next round — so a poll every two seconds
+   * routinely stepped straight over it, and the player sat on the room board
+   * while the ticket reserved for them expired sixty seconds later.
+   *
+   * This is the same event expressed as a state that persists for as long as
+   * the seat is held, which is what makes it observable by polling at all.
+   */
+  pendingMatch: z
+    .object({
+      tierId: z.string(),
+      gameId: z.string(),
+    })
+    .nullable()
+    .default(null),
 });
 
 export const lobbyJoinRequestSchema = z.object({

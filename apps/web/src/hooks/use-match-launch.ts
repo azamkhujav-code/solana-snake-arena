@@ -44,7 +44,21 @@ export function useMatchLaunch(): {
   const lobby = currentTierId
     ? (data?.lobbies.find((entry) => entry.tierId === currentTierId) ?? null)
     : null;
-  const launching = lobby?.status === 'launching';
+
+  /**
+   * Launched, as something a poll can actually see.
+   *
+   * `status === 'launching'` was the only signal, and it is not one: the lobby
+   * launches and reopens for the next round in the same breath, so a poll every
+   * two seconds walked straight past it. The player stayed on the room board
+   * watching a match they had paid into start without them, and sixty seconds
+   * later the seat held for them expired.
+   *
+   * `pendingMatch` is that seat. It lasts as long as the ticket does, so it is
+   * still there whenever the next poll happens to land.
+   */
+  const pending = data?.pendingMatch ?? null;
+  const launching = lobby?.status === 'launching' || pending !== null;
 
   const enterMatch = useCallback(
     async (tierId: string) => {
@@ -90,15 +104,20 @@ export function useMatchLaunch(): {
   );
 
   useEffect(() => {
-    if (!currentTierId) {
+    // The tier to enter comes from the staged match when there is one: the
+    // launch clears the queue, so `currentTierId` can already be null by the
+    // time a seat is being held for this player.
+    const tierId = pending?.tierId ?? currentTierId;
+
+    if (!tierId) {
       claimed.current = null;
       return;
     }
-    if (!launching || claimed.current === currentTierId) return;
+    if (!launching || claimed.current === tierId) return;
 
-    claimed.current = currentTierId;
-    void enterMatch(currentTierId);
-  }, [currentTierId, launching, enterMatch]);
+    claimed.current = tierId;
+    void enterMatch(tierId);
+  }, [currentTierId, pending, launching, enterMatch]);
 
   /**
    * Enters a match straight away, without waiting on the lobby.

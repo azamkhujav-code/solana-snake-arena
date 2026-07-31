@@ -21,6 +21,27 @@ import { canAfford, releaseStake, StakeError } from '../services/stake-client.js
  * — a WebSocket per browser sitting in a menu is a lot of connections to hold
  * open for that.
  */
+
+/**
+ * The staged ticket a launch left for this player, if any.
+ *
+ * `launch` writes one per entrant and gives it sixty seconds to live, so unlike
+ * the lobby's momentary `launching` status it is still there on the next poll.
+ *
+ * The tier is read from the staged record rather than from the caller's queue
+ * membership: launching clears the queue, so by the time this is polled the
+ * player is no longer in the room they are about to enter.
+ */
+function parsePendingMatch(raw: string | null): { tierId: string; gameId: string } | null {
+  if (!raw) return null;
+
+  try {
+    const meta = JSON.parse(raw) as { gameId?: string; tierId?: string };
+    return meta.gameId && meta.tierId ? { tierId: meta.tierId, gameId: meta.gameId } : null;
+  } catch {
+    return null;
+  }
+}
 export async function lobbyRoutes(app: FastifyInstance): Promise<void> {
   const api = app.withTypeProvider<ZodTypeProvider>();
 
@@ -45,15 +66,16 @@ export async function lobbyRoutes(app: FastifyInstance): Promise<void> {
       config: { rateLimit: { max: 120, timeWindow: 60_000 } },
     },
     async (request, reply) => {
-      const [lobbies, currentTierId] = await Promise.all([
+      const [lobbies, currentTierId, staged] = await Promise.all([
         app.lobbies.list(),
         app.lobbies.whereIs(request.user.sub),
+        app.redis.get(`ticket:meta:${request.user.sub}`),
       ]);
 
       // Short cache: the board is polled hard and a second of staleness is
       // invisible next to a 30-second countdown.
       void reply.header('cache-control', 'private, max-age=1');
-      return { lobbies, currentTierId };
+      return { lobbies, currentTierId, pendingMatch: parsePendingMatch(staged) };
     },
   );
 
