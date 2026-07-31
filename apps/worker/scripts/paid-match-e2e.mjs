@@ -23,7 +23,7 @@ import {
   Transaction,
   sendAndConfirmTransaction,
 } from '@solana/web3.js';
-import { ArenaService, findConfigPda, roomIdFromUuid } from '@arena/solana';
+import { ArenaService, findConfigPda, findRoomPda, roomIdFromUuid } from '@arena/solana';
 import { io } from 'socket.io-client';
 import nacl from 'tweetnacl';
 import bs58 from 'bs58';
@@ -201,6 +201,30 @@ console.log(`\nGame  ${gameId}`);
 console.log(`Vault ${vault.toBase58()}  ${sol(await balance(vault))}`);
 
 // ---- pay ------------------------------------------------------------------
+
+/**
+ * The room has to exist before anyone can pay into it.
+ *
+ * The worker opens it within seconds of somebody queueing, but "somebody
+ * queued" and "the room is open" are two different events and this sits between
+ * them. Paying early fails simulation, which is the same confusing wallet error
+ * players were seeing.
+ */
+const [roomPda] = findRoomPda(PROGRAM_ID, roomIdBytes);
+process.stdout.write('Waiting for the room to open on chain');
+let roomReady = false;
+for (let i = 0; i < 40 && !roomReady; i += 1) {
+  roomReady = (await connection.getAccountInfo(roomPda)) !== null;
+  if (!roomReady) {
+    process.stdout.write('.');
+    await new Promise((r) => setTimeout(r, 3_000));
+  }
+}
+console.log(roomReady ? ' open.' : ' NEVER OPENED.');
+if (!roomReady) {
+  console.error('The worker never created the room — check its logs and the authority balance.');
+  process.exit(1);
+}
 
 console.log('\nPaying entry fees (enter_room, signed by each player)…');
 const vaultBefore = await balance(vault);
