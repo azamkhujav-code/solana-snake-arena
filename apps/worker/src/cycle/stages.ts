@@ -490,6 +490,29 @@ const endMatch: StageHandler = async (data, ctx) => {
 const archiveGame: StageHandler = async (data, ctx) => {
   if (!data.gameId) throw new Error('archive-game ran without a gameId');
 
+  /**
+   * Take the room's rent back.
+   *
+   * `create_room` allocated two accounts and the authority funded both
+   * rent-exempt deposits — about 0.0027 SOL that used to stay on chain forever,
+   * holding open a room nobody would ever look at again. Over a day of cycles
+   * that is more than the entry fees of the matches it paid for.
+   *
+   * Here rather than in `end-match`: settlement is the step that must not be
+   * disturbed, and closing the room needs the vault to be empty, which is only
+   * true once the payout has landed. Failure is logged and dropped — the rent
+   * is recoverable by anyone at any later time, and a match that has already
+   * paid its winner must not be marked failed over bookkeeping.
+   */
+  if (ctx.solana.canSignOnChain) {
+    try {
+      await ctx.solana.closeRoom(roomIdFromUuid(data.gameId));
+      ctx.log.info({ gameId: data.gameId }, 'reclaimed the room rent');
+    } catch (error) {
+      ctx.log.warn({ err: error, gameId: data.gameId }, 'could not reclaim the room rent');
+    }
+  }
+
   const participants = await ctx.prisma.gamePlayer.findMany({
     where: { gameId: data.gameId },
     select: {

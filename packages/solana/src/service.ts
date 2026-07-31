@@ -13,6 +13,7 @@ import { SolanaServiceError, toServiceError } from './errors.js';
 import {
   createCancelRoomInstruction,
   createClaimRefundInstruction,
+  createCloseRoomInstruction,
   createDistributeWinningsInstruction,
   createEnterRoomInstruction,
   createInitializeInstruction,
@@ -344,6 +345,28 @@ export class ArenaService {
     return this.sendSigned(
       [
         createStartRoomInstruction({
+          programId: this.programId,
+          settlementAuthority: authority.publicKey,
+          roomId,
+        }),
+      ],
+      [authority],
+    );
+  }
+
+  /**
+   * Reclaims a finished room's rent deposits.
+   *
+   * The authority signs only because somebody has to pay the transaction fee —
+   * the instruction needs no signature of its own, since the lamports return to
+   * the authority named in config whoever sends it. Worth about 0.0027 SOL a
+   * match, which is otherwise gone for good.
+   */
+  async closeRoom(roomId: Uint8Array): Promise<SendResult> {
+    const authority = this.requireSettlementAuthority();
+    return this.sendSigned(
+      [
+        createCloseRoomInstruction({
           programId: this.programId,
           settlementAuthority: authority.publicKey,
           roomId,

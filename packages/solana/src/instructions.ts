@@ -587,3 +587,61 @@ export function createSettleToWinnerInstruction(params: {
     data: encodeInstruction('settle_to_winner'),
   });
 }
+
+/**
+ * Reclaims a finished room's rent for the settlement authority.
+ *
+ * `create_room` allocates the room account and its vault, and the authority
+ * funds both rent-exempt deposits — roughly 0.0027 SOL a match that nothing
+ * ever gave back, because nothing closed the accounts. This closes them once
+ * the room is settled or cancelled and the vault holds nothing but its own
+ * deposit.
+ *
+ * Unsigned on purpose. The lamports go to the authority named in config
+ * whoever sends the transaction, so it can be cranked by anything — a
+ * scheduled job, an operator, a bored stranger — and none of them profit.
+ */
+export function createCloseRoomInstruction(params: {
+  programId: PublicKey;
+  settlementAuthority: PublicKey;
+  roomId: Uint8Array;
+}): TransactionInstruction {
+  const { programId, settlementAuthority } = params;
+  const roomId = normalizeRoomId(params.roomId);
+  const [config] = findConfigPda(programId);
+  const [room] = findRoomPda(programId, roomId);
+  const [roomVault] = findRoomVaultPda(programId, roomId);
+
+  return new TransactionInstruction({
+    programId,
+    keys: [readonly(config), writable(room), writable(roomVault), writable(settlementAuthority)],
+    data: encodeInstruction('close_room'),
+  });
+}
+
+/**
+ * Reclaims one player's entry-record rent, back to that player.
+ *
+ * `enter_room` opens a `RoomPlayer` account funded by the player, about 0.0016
+ * SOL they never saw again — a sixth of the entry fee on the cheapest paid
+ * room, charged on top of it and never disclosed.
+ *
+ * The rent returns to the player whoever sends this, so it needs no signature
+ * and cannot be redirected: the account's own seeds bind it to that wallet.
+ */
+export function createCloseRoomPlayerInstruction(params: {
+  programId: PublicKey;
+  player: PublicKey;
+  roomId: Uint8Array;
+}): TransactionInstruction {
+  const { programId, player } = params;
+  const roomId = normalizeRoomId(params.roomId);
+  const [room] = findRoomPda(programId, roomId);
+  const [roomPlayer] = findRoomPlayerPda(programId, room, player);
+
+  return new TransactionInstruction({
+    programId,
+    keys: [readonly(room), writable(roomPlayer), writable(player)],
+    data: encodeInstruction('close_room_player'),
+  });
+}

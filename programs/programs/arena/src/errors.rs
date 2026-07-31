@@ -91,4 +91,15 @@ pub enum ArenaError {
     Overflow,
     #[msg("Arithmetic underflow")]
     Underflow,
+
+    // ---- Cleanup ----------------------------------------------------------
+    //
+    // Appended rather than filed alongside the room errors above. Anchor
+    // numbers these sequentially from 6000 and the TypeScript side maps the
+    // numbers back to names, so inserting a variant in the middle silently
+    // renames every error after it. Tidier ordering is not worth that.
+    #[msg("Room is still running; there is nothing to close yet")]
+    RoomNotFinished,
+    #[msg("Player still has a claim on this room")]
+    PlayerNotFinished,
 }

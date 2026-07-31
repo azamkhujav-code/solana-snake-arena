@@ -4,6 +4,8 @@ import { describe, expect, it } from 'vitest';
 import { MAX_WINNERS_PER_DISTRIBUTION, ROOM_ID_LEN } from './constants.js';
 import { SolanaServiceError } from './errors.js';
 import {
+  createCloseRoomInstruction,
+  createCloseRoomPlayerInstruction,
   createDepositInstruction,
   createDistributeWinningsInstruction,
   createJoinRoomInstruction,
@@ -16,6 +18,7 @@ import {
   findPoolPda,
   findRoomPda,
   findRoomPlayerPda,
+  findRoomVaultPda,
   normalizeRoomId,
   roomIdFromString,
   roomIdFromUuid,
@@ -231,5 +234,68 @@ describe('createDistributeWinningsInstruction', () => {
         winners: [{ player: Keypair.generate().publicKey, lamports: 0n }],
       }),
     ).toThrow(SolanaServiceError);
+  });
+});
+
+/**
+ * Rent reclamation.
+ *
+ * Account order is the whole risk here: Anchor matches `#[derive(Accounts)]`
+ * fields positionally, so a builder that lists them in the wrong order compiles
+ * on both sides and fails only against a real cluster. These pin the order and
+ * the writability against the Rust structs.
+ */
+describe('close_room', () => {
+  const settlementAuthority = Keypair.generate().publicKey;
+
+  it('lists accounts in the order the program declares them', () => {
+    const ix = createCloseRoomInstruction({ programId, settlementAuthority, roomId });
+
+    const [config, room, vault, authority] = ix.keys;
+    expect(config?.pubkey.toBase58()).toBe(findConfigPda(programId)[0].toBase58());
+    expect(room?.pubkey.toBase58()).toBe(findRoomPda(programId, roomId)[0].toBase58());
+    expect(vault?.pubkey.toBase58()).toBe(findRoomVaultPda(programId, roomId)[0].toBase58());
+    expect(authority?.pubkey.toBase58()).toBe(settlementAuthority.toBase58());
+  });
+
+  it('marks everything it mutates as writable', () => {
+    // The room is closed, the vault is drained and the authority receives both
+    // deposits — a read-only marking on any of them fails at execution.
+    const ix = createCloseRoomInstruction({ programId, settlementAuthority, roomId });
+    const [config, ...rest] = ix.keys;
+
+    expect(config?.isWritable).toBe(false);
+    for (const key of rest) expect(key.isWritable).toBe(true);
+  });
+
+  it('needs no signature', () => {
+    // The lamports go to the authority named in config regardless of who sends
+    // it, so requiring a signature would only stop anyone else cranking it.
+    const ix = createCloseRoomInstruction({ programId, settlementAuthority, roomId });
+    expect(ix.keys.some((key) => key.isSigner)).toBe(false);
+  });
+});
+
+describe('close_room_player', () => {
+  it('derives the entry record from the room and the player', () => {
+    const player = Keypair.generate().publicKey;
+    const ix = createCloseRoomPlayerInstruction({ programId, player, roomId });
+
+    const [room] = findRoomPda(programId, roomId);
+    const [expected] = findRoomPlayerPda(programId, room, player);
+
+    expect(ix.keys[0]?.pubkey.toBase58()).toBe(room.toBase58());
+    expect(ix.keys[1]?.pubkey.toBase58()).toBe(expected.toBase58());
+    expect(ix.keys[2]?.pubkey.toBase58()).toBe(player.toBase58());
+  });
+
+  it('returns the rent to the player without their signature', () => {
+    // Bound by the record's own seeds, so it cannot be redirected — which is
+    // what makes it safe for anyone to crank on a player's behalf.
+    const player = Keypair.generate().publicKey;
+    const ix = createCloseRoomPlayerInstruction({ programId, player, roomId });
+
+    expect(ix.keys.some((key) => key.isSigner)).toBe(false);
+    expect(ix.keys[2]?.isWritable).toBe(true);
   });
 });

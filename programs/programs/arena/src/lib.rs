@@ -221,4 +221,17 @@ pub mod arena {
     pub fn claim_refund(ctx: Context<ClaimRefund>) -> Result<()> {
         instructions::settle::claim_refund(ctx)
     }
+
+    /// Reclaims a finished room's rent for the settlement authority.
+    ///
+    /// Permissionless: the lamports go to the authority that put them up
+    /// whoever sends the transaction, so there is nothing to win by racing it.
+    pub fn close_room(ctx: Context<CloseRoom>) -> Result<()> {
+        instructions::cleanup::close_room(ctx)
+    }
+
+    /// Reclaims one player's entry-record rent, back to that player.
+    pub fn close_room_player(ctx: Context<CloseRoomPlayer>) -> Result<()> {
+        instructions::cleanup::close_room_player(ctx)
+    }
 }

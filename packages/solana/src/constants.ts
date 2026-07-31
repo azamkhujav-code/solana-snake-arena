@@ -75,6 +75,8 @@ export const ARENA_ERROR_CODES: Readonly<Record<number, string>> = Object.freeze
   6035: 'DuplicateWinner',
   6036: 'Overflow',
   6037: 'Underflow',
+  6038: 'RoomNotFinished',
+  6039: 'PlayerNotFinished',
 });
 
 /** Errors worth retrying — the transaction never committed. */
