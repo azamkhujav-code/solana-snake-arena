@@ -191,6 +191,39 @@ export async function settleGame(deps: SettleDeps, gameId: string): Promise<Sett
    * what players were expected to pay, it is what they did. The rent-exempt
    * floor is excluded — it belongs to the account, not the prize.
    */
+  /**
+   * An empty vault means the money has already gone.
+   *
+   * `potLamports` records what was collected, not what is still there, so a
+   * game whose payout landed but whose bookkeeping did not finish looked to
+   * this function like a full pot waiting to be paid. It then tried again,
+   * failed on `RoomNotInProgress` against a room the chain had already settled,
+   * and retried for ever — a loop that could never do anything except fail,
+   * around money that was already in the winner's wallet.
+   *
+   * The vault is the truth. If it holds nothing beyond its own rent, there is
+   * nothing left to distribute whatever the row says.
+   */
+  if (game.potLamports > 0n && deps.solana.canSignOnChain) {
+    const vault = deps.solana.getRoomVaultAddress(roomIdFromUuid(gameId));
+    const [balance, rentFloor] = await Promise.all([
+      deps.solana.connection
+        .getBalance(vault)
+        .then(BigInt)
+        .catch(() => -1n),
+      deps.solana.connection
+        .getMinimumBalanceForRentExemption(0)
+        .then(BigInt)
+        .catch(() => 0n),
+    ]);
+
+    if (balance >= 0n && balance <= rentFloor) {
+      await finishGame(deps, gameId, SettlementStatus.CONFIRMED, null);
+      deps.log.info({ gameId }, 'vault already empty; recording the payout as done');
+      return { status: 'already-settled' };
+    }
+  }
+
   let pot = game.potLamports;
 
   if (pot === 0n) {

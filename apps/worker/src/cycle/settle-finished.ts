@@ -5,6 +5,15 @@ import type { ArenaService } from '@arena/solana';
 
 import { resultKey, settleGame } from '../settlement/settle.js';
 
+/**
+ * Mirrors the realtime node's queue key.
+ *
+ * Duplicated rather than imported: the worker does not depend on the realtime
+ * service, and a shared constant would couple two independently deployable
+ * things for one string.
+ */
+const SETTLE_QUEUE = 'settle:pending';
+
 export interface SettleFinishedDeps {
   prisma: PrismaClient;
   redis: RedisClient;
@@ -34,7 +43,45 @@ export interface SettleFinishedDeps {
  */
 export function createFinishedMatchSettler(deps: SettleFinishedDeps): () => Promise<void> {
   return async function settleFinished(): Promise<void> {
+    /**
+     * The games the node has actually finished, named rather than guessed at.
+     *
+     * This used to scan recent rows for anything that might be done, with no
+     * ordering and a cap of twenty — and the cycle creates seven games every
+     * ten minutes, so the handful actually holding prize money sank out of
+     * reach within the hour. Ten vaults' worth went unpaid that way, each with
+     * a correct result sitting in Redis that nothing ever looked at.
+     *
+     * Removed only once the game is settled, so a crash between reading and
+     * paying leaves it queued for the next pass.
+     */
+    const queued = await deps.redis.smembers(SETTLE_QUEUE);
+
+    for (const gameId of queued) {
+      try {
+        const outcome = await settleGame(deps, gameId);
+
+        if (outcome.status === 'settled' || outcome.status === 'already-settled') {
+          await deps.redis.srem(SETTLE_QUEUE, gameId);
+          if (outcome.status === 'settled') {
+            deps.log.info({ gameId }, 'settled a finished match early');
+          }
+        } else if (outcome.status === 'rejected') {
+          // The same report will fail the same way, so leaving it queued only
+          // repeats the failure every pass.
+          await deps.redis.srem(SETTLE_QUEUE, gameId);
+          deps.log.error({ gameId, reasons: outcome.reasons }, 'settlement rejected');
+        }
+      } catch (error) {
+        deps.log.warn({ err: error, gameId }, 'queued settlement attempt failed');
+      }
+    }
+
+    // The sweep below stays as a backstop for anything the queue missed — a
+    // node that died between reporting and enqueuing, or a game settled by an
+    // older build. It is bounded and ordered so it cannot silently fall behind.
     const running = await deps.prisma.game.findMany({
+      orderBy: { startedAt: 'desc' },
       where: {
         /**
          * `PENDING` as well as `RUNNING`, because a game only becomes running

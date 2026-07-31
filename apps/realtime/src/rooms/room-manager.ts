@@ -15,6 +15,14 @@ import { Room } from './room.js';
  */
 const RESULT_TTL_SECONDS = 24 * 60 * 60;
 
+/**
+ * Games that have finished and are waiting to be paid out.
+ *
+ * A queue rather than a query: the worker used to look for finished matches by
+ * scanning recent games, and a busy board buries them faster than it can look.
+ */
+export const SETTLE_QUEUE = 'settle:pending';
+
 export interface RoomManagerOptions {
   logger: Logger;
   redis: RedisClient;
@@ -208,6 +216,12 @@ export class RoomManager {
 
       void this.redis
         .set(`match:result:${gameId}`, JSON.stringify(result), 'EX', RESULT_TTL_SECONDS)
+        // Named on a queue as well as written, so the worker settles the games
+        // that finished rather than hunting for them. It was scanning recent
+        // rows instead, and with seven new games every cycle the ones holding
+        // money fell off the end of the list — ten vaults' worth of prizes went
+        // unpaid while their results sat here, correct and unread.
+        .then(() => this.redis.sadd(SETTLE_QUEUE, gameId))
         .then(() => {
           this.log.info(
             { roomId: room.roomId, gameId, standings: result.standings.length },

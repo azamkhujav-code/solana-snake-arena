@@ -79,7 +79,7 @@ export function MatchResult({ result, playerId, tierId, onLeave }: MatchResultPr
               <p className="my-5 text-sm text-slate-400">
                 {knownFree(tierId)
                   ? 'A practice match — nothing was staked, so there is nothing to pay out.'
-                  : 'Your winnings are being settled. Check your wallet in a few minutes.'}
+                  : 'Your winnings are being settled — check your wallet in a moment.'}
               </p>
             ) : (
               <div className="my-5">
@@ -87,12 +87,14 @@ export function MatchResult({ result, playerId, tierId, onLeave }: MatchResultPr
                 <p className="text-4xl font-semibold tabular-nums text-emerald-400">
                   {formatSol(prize)} ◎
                 </p>
-                {/* Said plainly because it is not instant: settlement runs on
-                    the match cycle, so the lamports arrive shortly after this
-                    screen does, and a player watching their balance needs to
-                    know that is expected rather than broken. */}
+                {/* A number, because the vaguer version was worse than useless:
+                    settlement takes about fifteen seconds — the payout loop
+                    runs every ten and the three on-chain steps take a few more
+                    — and telling someone "a few minutes" for that teaches them
+                    to stop watching before it arrives, then to assume it never
+                    did. */}
                 <p className="mt-2 text-xs text-slate-400">
-                  Being sent to your wallet now. It lands within a few minutes.
+                  Being sent to your wallet now — usually within half a minute.
                 </p>
               </div>
             )}
