@@ -96,12 +96,53 @@ export async function settleGame(deps: SettleDeps, gameId: string): Promise<Sett
     return { status: 'rejected', reasons: ['result payload was not valid JSON'] };
   }
 
+  /**
+   * Adopt the entrants and the host from the chain when nothing recorded them.
+   *
+   * A match entered directly never passes through the cycle stages that write
+   * `game_players` and stamp the node that hosted it. Settlement then rejected
+   * its own node's report twice over — "came from a node that did not host this
+   * game" and "a reported player never entered this game" — and the pot stayed
+   * in the vault. Several did.
+   *
+   * The report is not taken on trust. A player counts as an entrant only if the
+   * chain says they paid: `enter_room` opens their `RoomPlayer` account and
+   * moves the fee in the same instruction, so that account existing *is* the
+   * payment and a report cannot invent one. The node id is adopted only because
+   * there is nothing to check it against — no node was ever assigned — rather
+   * than because the report asserted it.
+   */
+  let entrants = game.gamePlayers.map((player) => player.userId);
+  let expectedNodeId = game.nodeId;
+
+  if (entrants.length === 0) {
+    const reported = report.standings.map((row) => row.playerId);
+    const wallets = await resolveWallets(deps, reported);
+    const paid: string[] = [];
+
+    for (const playerId of reported) {
+      const address = wallets.get(playerId);
+      if (!address) continue;
+
+      const entry = deps.solana.getRoomPlayerAddress(
+        roomIdFromUuid(gameId),
+        new PublicKey(address),
+      );
+      if ((await deps.solana.connection.getAccountInfo(entry)) !== null) paid.push(playerId);
+    }
+
+    if (paid.length > 0) {
+      entrants = paid;
+      expectedNodeId = report.nodeId;
+      deps.log.info(
+        { gameId, entrants: paid.length, nodeId: report.nodeId },
+        'adopted entrants from the chain for a directly-entered match',
+      );
+    }
+  }
+
   // ---- 2. Verify ---------------------------------------------------------
-  const verified = verifyResult(report, {
-    gameId,
-    entrants: game.gamePlayers.map((player) => player.userId),
-    expectedNodeId: game.nodeId,
-  });
+  const verified = verifyResult(report, { gameId, entrants, expectedNodeId });
 
   if (!verified.ok) {
     const reasons = verified.failures.map(describeFailure);
@@ -137,11 +178,46 @@ export async function settleGame(deps: SettleDeps, gameId: string): Promise<Sett
     });
   }
 
-  const { prizePool, rake } = splitPot(game.potLamports, game.room.rakeBps);
+  /**
+   * The pot is what the vault holds, when nothing recorded it.
+   *
+   * `close-lobby` writes `potLamports` by reading the vault, and a directly
+   * entered match never reaches that stage — so its pot stayed zero however
+   * much had actually been paid in. Settlement then took the "nothing to
+   * settle" branch below and marked the game done without moving a lamport,
+   * which is the same outcome as failing except that it looks like success.
+   *
+   * Read from the chain for the same reason `close-lobby` does: the pot is not
+   * what players were expected to pay, it is what they did. The rent-exempt
+   * floor is excluded — it belongs to the account, not the prize.
+   */
+  let pot = game.potLamports;
+
+  if (pot === 0n) {
+    const vault = deps.solana.getRoomVaultAddress(roomIdFromUuid(gameId));
+    const [balance, rentFloor] = await Promise.all([
+      deps.solana.connection
+        .getBalance(vault)
+        .then(BigInt)
+        .catch(() => 0n),
+      deps.solana.connection
+        .getMinimumBalanceForRentExemption(0)
+        .then(BigInt)
+        .catch(() => 0n),
+    ]);
+
+    if (balance > rentFloor) {
+      pot = balance - rentFloor;
+      await deps.prisma.game.update({ where: { id: gameId }, data: { potLamports: pot } });
+      deps.log.info({ gameId, pot: pot.toString() }, 'read the pot from the vault');
+    }
+  }
+
+  const { prizePool, rake } = splitPot(pot, game.room.rakeBps);
   const payouts = computePayouts(verified.standings, prizePool);
 
   // Free rooms have nothing to settle. Everything below this point is money.
-  if (game.potLamports === 0n || payouts.length === 0) {
+  if (pot === 0n || payouts.length === 0) {
     await finishGame(deps, gameId, SettlementStatus.NOT_REQUIRED, null);
     await updateLeaderboard(deps, gameId, verified.standings, game.room.mode);
     await notifyPlayers(deps, gameId, winner.playerId, []);
@@ -189,6 +265,24 @@ export async function settleGame(deps: SettleDeps, gameId: string): Promise<Sett
 
   if (onChain) {
     try {
+      /**
+       * Start the room first, if nothing already did.
+       *
+       * `unlock_prize` requires the room to be in progress, and `start_room` is
+       * called by `close-lobby` — a stage a directly entered match never
+       * reaches. So its room sat at `Open` and settlement died on
+       * `RoomNotInProgress` with the pot still inside, having got everything
+       * else right.
+       *
+       * Idempotent by the same rule `close-lobby` uses: a room that is already
+       * started is the desired state, not a failure, and a retry lands here
+       * routinely.
+       */
+      await deps.solana.startRoom(onChainRoomId).catch((error: unknown) => {
+        const message = error instanceof Error ? error.message : String(error);
+        if (!/already|InvalidRoomStatus|RoomNotOpen/i.test(message)) throw error;
+      });
+
       await deps.solana.unlockPrize(onChainRoomId);
     } catch (error) {
       // Already unlocked is the desired end state, not a failure — a retry after

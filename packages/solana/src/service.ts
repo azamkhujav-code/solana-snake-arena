@@ -24,7 +24,14 @@ import {
   createWithdrawTreasuryInstruction,
   type WinnerPayout,
 } from './instructions.js';
-import { findPoolPda, findRoomVaultPda, findTreasuryPda, normalizeRoomId } from './pda.js';
+import {
+  findPoolPda,
+  findRoomPda,
+  findRoomPlayerPda,
+  findRoomVaultPda,
+  findTreasuryPda,
+  normalizeRoomId,
+} from './pda.js';
 import { TransactionBuilder } from './tx/builder.js';
 import { sendAndConfirm } from './tx/confirm.js';
 import {
@@ -261,6 +268,20 @@ export class ArenaService {
   getRoomVaultAddress(roomId: Uint8Array): PublicKey {
     const [vault] = findRoomVaultPda(this.programId, normalizeRoomId(roomId));
     return vault;
+  }
+
+  /**
+   * A player's entry record for a room.
+   *
+   * `enter_room` opens this account and moves the fee in the same instruction,
+   * so its existence is the payment — which makes it the honest answer to "did
+   * this player actually enter", as against a claim in a report.
+   */
+  getRoomPlayerAddress(roomId: Uint8Array, player: PublicKey): PublicKey {
+    const normalized = normalizeRoomId(roomId);
+    const [room] = findRoomPda(this.programId, normalized);
+    const [entry] = findRoomPlayerPda(this.programId, room, player);
+    return entry;
   }
 
   async getVaultBalances(): Promise<{ pool: bigint; treasury: bigint }> {

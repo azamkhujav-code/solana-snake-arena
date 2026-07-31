@@ -46,7 +46,16 @@ const createGame: StageHandler = async (data, ctx) => {
   // The Room row is per-tier and long-lived; only the Game is per-cycle.
   const room = await ctx.prisma.room.upsert({
     where: { code: tier.id },
-    update: { entryFeeLamports: tier.entryFeeLamports, maxPlayers: tier.maxPlayers },
+    // `rakeBps` is included because settlement splits the pot by it, and every
+    // row had been left at zero. The chain still took its ten per cent, which
+    // it reads from `Config` rather than from us — so the money was right while
+    // the ledger recorded a rake of nothing and a payout of the entire pot.
+    // Books disagreeing with the chain is the harder of the two to notice.
+    update: {
+      entryFeeLamports: tier.entryFeeLamports,
+      maxPlayers: tier.maxPlayers,
+      rakeBps: tier.rakeBps,
+    },
     create: {
       code: tier.id,
       name: tier.name,
@@ -56,6 +65,7 @@ const createGame: StageHandler = async (data, ctx) => {
       status: RoomStatus.ACTIVE,
       maxPlayers: tier.maxPlayers,
       entryFeeLamports: tier.entryFeeLamports,
+      rakeBps: tier.rakeBps,
     },
     select: { id: true },
   });

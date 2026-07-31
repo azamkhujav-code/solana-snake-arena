@@ -38,7 +38,13 @@ export interface EnsureRoomsDeps {
  */
 async function bindGame(
   deps: EnsureRoomsDeps,
-  tier: { id: string; name: string; entryFeeLamports: bigint; maxPlayers: number | null },
+  tier: {
+    id: string;
+    name: string;
+    entryFeeLamports: bigint;
+    maxPlayers: number | null;
+    rakeBps: number;
+  },
 ): Promise<string | null> {
   const room = await deps.prisma.room.upsert({
     where: { code: tier.id },
@@ -52,6 +58,9 @@ async function bindGame(
       status: RoomStatus.ACTIVE,
       maxPlayers: tier.maxPlayers,
       entryFeeLamports: tier.entryFeeLamports,
+      // Settlement splits the pot by this. Left at zero it records a rake of
+      // nothing against a chain that took ten per cent regardless.
+      rakeBps: tier.rakeBps,
     },
     select: { id: true },
   });

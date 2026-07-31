@@ -36,7 +36,20 @@ export function createFinishedMatchSettler(deps: SettleFinishedDeps): () => Prom
   return async function settleFinished(): Promise<void> {
     const running = await deps.prisma.game.findMany({
       where: {
-        status: GameStatus.RUNNING,
+        /**
+         * `PENDING` as well as `RUNNING`, because a game only becomes running
+         * when the cycle's `close-lobby` says so — and a match entered directly
+         * never passes through that stage. Its game stayed `PENDING` for its
+         * whole life, so this loop skipped it, and a match that had reported a
+         * perfectly good result was never settled by anything. The node's report
+         * is the signal that matters here; the status is bookkeeping about how
+         * the match was started, which has no bearing on whether it is over.
+         *
+         * `settleGame` still refuses a cancelled game and answers
+         * `already-settled` on one that has paid, so widening this cannot pay
+         * twice or pay a refunded match.
+         */
+        status: { in: [GameStatus.RUNNING, GameStatus.PENDING] },
         settlementStatus: { in: [SettlementStatus.PENDING, SettlementStatus.NOT_REQUIRED] },
       },
       select: { id: true },
