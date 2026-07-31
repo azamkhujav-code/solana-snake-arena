@@ -22,7 +22,7 @@ idl-build = ["anchor-lang/idl-build"]
 # deposit instead of forcing a separate transaction. Every use of it below is
 # on a PDA whose seeds bind it to one owner, which is what makes the
 # re-initialisation attack the feature warns about inapplicable.
-anchor-lang = { version = "0.32.1", features = ["init-if-needed"] }
+anchor-lang = { version = "1.1.2", features = ["init-if-needed"] }
 
 [lints.rust]
 unexpected_cfgs = { level = "allow", check-cfg = ['cfg(target_os, values("solana"))'] }
