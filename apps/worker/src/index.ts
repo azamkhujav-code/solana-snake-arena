@@ -13,6 +13,7 @@ import {
   removeScheduler,
 } from './cycle/queue.js';
 import { createRoomEnsurer } from './cycle/ensure-rooms.js';
+import { createFinishedMatchSettler } from './cycle/settle-finished.js';
 import { createCycleWorker } from './cycle/worker.js';
 import { loadSettlementAuthority } from './lib/settlement-authority.js';
 
@@ -110,12 +111,33 @@ async function main(): Promise<void> {
   });
 
   /**
+   * Pays out matches as they finish, not when the cycle gets round to it.
+   *
+   * A match is decided the moment one snake is left standing, which is usually
+   * minutes before `end-match` is scheduled to run. Waiting for the schedule
+   * left a winner staring at "being sent to your wallet" for the rest of the
+   * cycle, with nothing wrong and no way to tell that from a failure.
+   */
+  const settleFinished = createFinishedMatchSettler({
+    prisma,
+    redis,
+    solana,
+    log,
+    now: Date.now,
+    feeDestination: config.FEE_DESTINATION ?? settlementAuthority?.publicKey.toBase58() ?? '',
+  });
+  const settleTimer = setInterval(() => {
+    void settleFinished().catch((err: unknown) => log.error({ err }, 'early settlement failed'));
+  }, 10_000);
+  settleTimer.unref();
+
+  /**
    * Opens rooms for tiers people are actually queued in.
    *
-   * Runs far more often than the cycle because it is answering a different
-   * question: the cycle asks "is it time for the next match", this asks "is
-   * there anybody waiting who cannot pay yet". A player who joins between
-   * cycles needs the second one answered in seconds, not on the next window.
+   * Runs far more often than the cycle because it answers a different question:
+   * the cycle asks "is it time for the next match", this asks "is there anybody
+   * waiting who cannot pay yet". A player who joins between cycles needs the
+   * second one answered in seconds, not on the next window.
    *
    * Cheap when idle — a Redis read per paid tier and nothing else until someone
    * queues — and `unref`ed so it never holds the process open at shutdown.
