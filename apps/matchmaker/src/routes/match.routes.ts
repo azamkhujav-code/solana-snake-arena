@@ -186,18 +186,60 @@ export async function matchmakingRoutes(app: FastifyInstance): Promise<void> {
       }
 
       /**
-       * Direct entry, with no launch behind it.
+       * The room the tier's money is in, when the tier has a game bound.
+       *
+       * This is where the entry fee actually went. The client pays into the
+       * lobby's game vault, and direct entry used to answer with a room id it
+       * had invented and no game id at all — so the players' stakes sat in one
+       * account while the match they were playing had no idea it existed.
+       * Nothing reported a result, nothing settled, and the money stayed in the
+       * vault. Nearly three SOL accumulated across seven of them that way, none
+       * of it lost and none of it reachable.
+       *
+       * Deriving the room from the game id makes the two the same thing by
+       * construction: everyone who paid into a game plays in its room, and that
+       * room reports under the id settlement looks the game up by. It also
+       * gives a match a start and an end for free, because the id rotates with
+       * the cycle rather than with a timer nobody else can see.
+       */
+      const boundTier = request.body.tierId ?? null;
+      const bound = boundTier ? await app.lobbies.get(boundTier).catch(() => null) : null;
+
+      if (bound?.gameId) {
+        const roomId = bound.gameId.replace(/-/g, '').slice(0, 16);
+
+        const claims = buildTicketClaims({
+          playerId,
+          wallet: request.user.wallet,
+          roomId,
+          nodeId: decision.nodeId,
+          nickname: request.user.nickname ?? playerId.slice(0, 8),
+          gameId: bound.gameId,
+        });
+
+        const ticket = mintTicket(claims, config.JWT_SECRET);
+        await app.redis.set(redisKeys.matchTicket(playerId), ticket, 'PX', TICKET_TTL_MS);
+        await noteReconnectRoom(app, playerId, roomId);
+
+        return {
+          roomId,
+          realtimeUrl: decision.advertiseUrl,
+          ticket,
+          expiresAt: claims.expiresAt,
+          region,
+          mode,
+        };
+      }
+
+      /**
+       * No game bound: an unranked entry with nothing staked.
        *
        * A fresh id per caller was the obvious thing and the wrong one: two
        * people opening the same room seconds apart each got a private world and
-       * a snake with nobody to play against. The room they picked said nothing
-       * about where they ended up.
-       *
-       * So direct entrants share the tier's currently open world instead. The
-       * pointer carries the node as well as the room — placement is decided per
-       * request, and two players sent to different nodes would sit in
-       * identically-named rooms on separate machines, which looks exactly like
-       * the bug being fixed.
+       * a snake with nobody to play against. So they share the tier's currently
+       * open world instead. The pointer carries the node as well as the room —
+       * placement is decided per request, and two players sent to different
+       * nodes would sit in identically-named rooms on separate machines.
        *
        * The TTL is what keeps a match a match: it bounds how long one world
        * keeps accepting arrivals, so a later player starts a fresh game at 0:00
