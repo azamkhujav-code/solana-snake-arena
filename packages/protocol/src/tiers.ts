@@ -76,10 +76,19 @@ export interface RoomTier {
   /**
    * How long the lobby counts down once `minPlayers` is reached.
    *
-   * Ten seconds in every room. Entry fees are escrowed on join now, one player
-   * at a time, so there is nothing left for a long countdown to coordinate —
-   * the money is already in the vault by the time the room is full enough to
-   * start. A longer wait would only be a longer wait.
+   * Ten seconds on the free room, where nothing is collected and the countdown
+   * is only a moment to notice the match starting.
+   *
+   * Paid rooms need long enough to *pay*. The fee is charged when the countdown
+   * begins, and a wallet approval is a human noticing a popup and pressing a
+   * button — which does not happen in the two seconds left after the client
+   * polls. At ten seconds the room launched while the prompt was still open, so
+   * the match started with an empty vault and the player was never charged for
+   * a game they had just entered.
+   *
+   * Paying marks the player ready, and a lobby where everyone is ready drops to
+   * `readyCountdownSeconds` — so this is a ceiling for the slowest approver,
+   * not a wait everyone sits through.
    */
   countdownSeconds: number;
   /**
@@ -109,7 +118,7 @@ export const ROOM_TIERS: readonly RoomTier[] = Object.freeze([
     entryFeeLamports: sol(0.01),
     minPlayers: 2,
     maxPlayers: null,
-    countdownSeconds: 10,
+    countdownSeconds: 45,
     readyCountdownSeconds: 5,
     description: 'Entry-level stakes.',
   },
@@ -120,7 +129,7 @@ export const ROOM_TIERS: readonly RoomTier[] = Object.freeze([
     entryFeeLamports: sol(0.05),
     minPlayers: 2,
     maxPlayers: null,
-    countdownSeconds: 10,
+    countdownSeconds: 45,
     readyCountdownSeconds: 5,
     description: 'A step up.',
   },
@@ -131,7 +140,7 @@ export const ROOM_TIERS: readonly RoomTier[] = Object.freeze([
     entryFeeLamports: sol(0.1),
     minPlayers: 2,
     maxPlayers: null,
-    countdownSeconds: 10,
+    countdownSeconds: 45,
     readyCountdownSeconds: 5,
     description: 'Serious stakes.',
   },
@@ -142,7 +151,7 @@ export const ROOM_TIERS: readonly RoomTier[] = Object.freeze([
     entryFeeLamports: sol(0.5),
     minPlayers: 2,
     maxPlayers: null,
-    countdownSeconds: 10,
+    countdownSeconds: 45,
     readyCountdownSeconds: 5,
     description: 'High stakes, smaller field.',
   },
@@ -153,7 +162,7 @@ export const ROOM_TIERS: readonly RoomTier[] = Object.freeze([
     entryFeeLamports: sol(1),
     minPlayers: 2,
     maxPlayers: null,
-    countdownSeconds: 10,
+    countdownSeconds: 45,
     readyCountdownSeconds: 5,
     description: 'For confident players.',
   },
@@ -164,7 +173,7 @@ export const ROOM_TIERS: readonly RoomTier[] = Object.freeze([
     entryFeeLamports: sol(5),
     minPlayers: 2,
     maxPlayers: null,
-    countdownSeconds: 10,
+    countdownSeconds: 45,
     readyCountdownSeconds: 5,
     description: 'The highest stakes on the board.',
   },

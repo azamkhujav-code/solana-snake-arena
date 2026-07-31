@@ -130,6 +130,15 @@ export async function matchmakingRoutes(app: FastifyInstance): Promise<void> {
           // finds it exactly once.
           await app.redis.set(redisKeys.matchTicket(playerId), issued, 'PX', TICKET_TTL_MS);
 
+          // Consumed, so stop advertising it. These keys are what `pendingMatch`
+          // reports, and leaving them behind for the rest of their minute meant
+          // the room board kept announcing a match the player was already in —
+          // so quitting it sent them straight back.
+          await Promise.all([
+            app.redis.del(`ticket:meta:${playerId}`),
+            app.redis.del(`ticket:${playerId}`),
+          ]);
+
           return {
             roomId: meta.roomId,
             realtimeUrl: meta.realtimeUrl,

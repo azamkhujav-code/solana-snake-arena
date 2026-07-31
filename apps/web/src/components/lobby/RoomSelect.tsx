@@ -26,12 +26,24 @@ import { RoomCard } from './RoomCard';
 /**
  * Collects the entry fee once the queued room starts counting down.
  *
- * Rendered as a banner rather than a modal: the countdown is ten seconds, and a
- * dialog that steals focus during it is more likely to be dismissed by reflex
- * than read. The wallet is already showing its own approval prompt.
+ * Rendered as a banner rather than a modal: a dialog that steals focus during a
+ * countdown is more likely to be dismissed by reflex than read, and the wallet
+ * is already showing its own approval prompt.
  */
 function EntryFeeBanner({ lobby }: { lobby: LobbySummary | null }) {
-  const { status, error, retry } = useEntryFee(lobby);
+  const setReady = useSetReady();
+  const tierId = lobby?.tierId ?? null;
+
+  // Paying is readiness: it lets a lobby where everyone has paid start on the
+  // short timer rather than waiting out a countdown sized for the slowest
+  // wallet approval.
+  const markReady = useCallback(() => {
+    if (tierId) setReady.mutate({ tierId, ready: true });
+    // `setReady` is a stable mutation object.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tierId]);
+
+  const { status, error, retry } = useEntryFee(lobby, markReady);
 
   if (!lobby || BigInt(lobby.entryFeeLamports) === 0n || status === 'idle') return null;
 

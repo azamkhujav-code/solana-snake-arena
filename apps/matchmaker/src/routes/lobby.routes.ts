@@ -5,6 +5,7 @@ import {
   lobbyReadyRequestSchema,
   lobbySummarySchema,
 } from '@arena/protocol';
+import { redisKeys } from '@arena/redis';
 import type { FastifyInstance } from 'fastify';
 import type { ZodTypeProvider } from 'fastify-type-provider-zod';
 import { z } from 'zod';
@@ -190,6 +191,22 @@ export async function lobbyRoutes(app: FastifyInstance): Promise<void> {
     },
     async (request) => {
       const result = await app.lobbies.leave(request.body.tierId, request.user.sub);
+
+      /**
+       * Drop any seat a launch was holding for this player.
+       *
+       * `pendingMatch` is read from these keys, and they outlive the lobby by a
+       * minute. Leaving without clearing them meant the room board still
+       * reported a match waiting, so the client walked the player straight back
+       * into the game they had just quit — leave, bounce, leave, bounce, until
+       * the sixty-second ticket finally expired. Pressing Leave ten times did
+       * work, which is the worst way for a bug like this to present.
+       */
+      await Promise.all([
+        app.redis.del(`ticket:meta:${request.user.sub}`),
+        app.redis.del(`ticket:${request.user.sub}`),
+        app.redis.del(redisKeys.matchTicket(request.user.sub)),
+      ]);
 
       // Best effort, deliberately. A player must always be able to leave a
       // lobby; a stranded reservation is recoverable by the reconciler, while

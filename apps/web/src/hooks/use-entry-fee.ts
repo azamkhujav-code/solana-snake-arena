@@ -27,7 +27,10 @@ export type EntryFeeStatus = 'idle' | 'awaiting-signature' | 'sending' | 'paid' 
  * paying twice — but it would still throw a confusing error at the player, and
  * a poll every two seconds would try it repeatedly.
  */
-export function useEntryFee(lobby: LobbySummary | null): {
+export function useEntryFee(
+  lobby: LobbySummary | null,
+  onPaid?: () => void,
+): {
   status: EntryFeeStatus;
   error: string | null;
   retry: () => void;
@@ -65,10 +68,7 @@ export function useEntryFee(lobby: LobbySummary | null): {
         const message = new TransactionMessage({
           payerKey: publicKey,
           recentBlockhash: blockhash,
-          instructions: [
-            ComputeBudgetProgram.setComputeUnitLimit({ units: 60_000 }),
-            instruction,
-          ],
+          instructions: [ComputeBudgetProgram.setComputeUnitLimit({ units: 60_000 }), instruction],
         }).compileToV0Message();
 
         setStatus('sending');
@@ -84,6 +84,21 @@ export function useEntryFee(lobby: LobbySummary | null): {
         );
 
         setStatus('paid');
+
+        /**
+         * Paid is ready.
+         *
+         * The countdown is sized for the slowest wallet approval, which is far
+         * longer than a lobby where everyone has already paid should sit there
+         * waiting. Readiness is what the state machine uses to cut it short, and
+         * having paid is the only readiness that means anything in a staked
+         * room — so the two are the same signal.
+         *
+         * Not awaited, and failures are swallowed: the fee is in the vault,
+         * which is what the match is settled from. Missing the shortcut costs
+         * seconds; surfacing it as a payment failure would be a lie.
+         */
+        onPaid?.();
       } catch (cause) {
         // Left failed rather than retried automatically. A rejected signature
         // is a decision, and re-prompting would be nagging; a genuine failure
@@ -93,7 +108,7 @@ export function useEntryFee(lobby: LobbySummary | null): {
         setError(cause instanceof Error ? cause.message : 'Could not pay the entry fee');
       }
     },
-    [publicKey, sendTransaction, connection],
+    [publicKey, sendTransaction, connection, onPaid],
   );
 
   useEffect(() => {
