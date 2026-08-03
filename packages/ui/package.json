@@ -27,11 +27,11 @@
     "@arena/typescript-config": "workspace:*",
     "@types/react": "^19.0.7",
     "@types/react-dom": "^19.0.3",
-    "eslint": "^9.39.5",
+    "eslint": "^10.8.0",
     "react": "^19.1.9",
     "react-dom": "^19.1.9",
     "rimraf": "^6.0.1",
-    "typescript": "^5.9.3",
+    "typescript": "^7.0.2",
     "vitest": "^4.1.10"
   },
   "peerDependencies": {
