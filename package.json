@@ -62,7 +62,7 @@
     "@arena/prettier-config": "workspace:*",
     "@arena/typescript-config": "workspace:*",
     "@commitlint/cli": "^19.6.1",
-    "@commitlint/config-conventional": "^19.6.0",
+    "@commitlint/config-conventional": "^21.2.0",
     "@electric-sql/pglite": "^0.5.4",
     "@playwright/test": "^1.62.1",
     "@solana/web3.js": "^1.98.4",
