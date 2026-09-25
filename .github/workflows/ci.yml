@@ -149,7 +149,7 @@ jobs:
           NEXT_PUBLIC_ARENA_PROGRAM_ID: Arena111111111111111111111111111111111111111
       - name: Run E2E
         run: pnpm test:e2e
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         # Traces and screenshots are only worth keeping when something failed.
         if: failure()
         with:
